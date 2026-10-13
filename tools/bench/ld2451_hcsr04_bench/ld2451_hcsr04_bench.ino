@@ -65,8 +65,12 @@ static void handle_frame(void)
 	link_on_ms = now;
 	digitalWrite(LED_LINK_PIN, HIGH);
 
-	if (total > TARGET_COUNT_OFFSET)
+	// Offset must land inside the payload, not the tail; an empty
+	// (len 0) frame means no targets.
+	if (6 + frame_len > TARGET_COUNT_OFFSET)
 		digitalWrite(LED_TARGET_PIN, frame[TARGET_COUNT_OFFSET] > 0 ? HIGH : LOW);
+	else
+		digitalWrite(LED_TARGET_PIN, LOW);
 }
 
 // Byte-at-a-time frame sync: match header, read length, wait for tail.
