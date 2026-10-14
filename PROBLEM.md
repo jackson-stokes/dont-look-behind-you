@@ -28,7 +28,7 @@ First guess at two items from the Section 3.2 menu, one sentence of justificatio
 
 C. Real-time scheduling (SCHED_FIFO/SCHED_RR) for a latency-critical path. 
 
-Ultrasonic range comes from timing the echo pulse, and 1ms of timing jitter is about 17cm of range error, so the capture path needs SCHED_FIFO.
+A warning reaches the driver through three processes (sensor capture, fusion, alert), and under CPU or disk load each hand-off can be delayed by tens of milliseconds, so the whole alert chain needs SCHED_FIFO to keep that delay bounded.
 
 E. A multi-process architecture: sensors isolated in separate processes, a hub aggregating over IPC (shared memory, message queues, or Unix domain sockets), a supervisor that survives any child dying.
 
