@@ -3,35 +3,40 @@
 ## The user 
 A person or place, named or nameable. Who will this sit next to? 
 
-The device will sit on or near the handlebars on a bicycle or other mode of transportation.
+A driver in Fort Collins. The device mounts on the car: a sensor pod outside on the right rear quarter, cabled through the door seal to a Raspberry Pi 5 inside the cabin, with an alert LED on the dash or right A-pillar.
 
 ## The problem 
 What goes wrong, how often, and what it costs (money, worry, ruined batches, missed warnings). Observable, not hypothetical. 
 
-Bikers don’t see a car or other cyclist coming up behind them. In Fort Collins, many cyclists get hit by cars costing a lot of money in legal fees, hospital bills, insurance claims, etc.
+A driver turning right doesn't see a cyclist coming up in the right-side blind spot and turns across them (the "right-hook"). In Fort Collins, cyclists get hit by cars this way, costing hospital bills, legal fees, and insurance claims. Factory blind-spot monitoring is missing on older cars and is tuned to detect cars, not cyclists.
 
 ## Why a device 
-The 3 a.m. test: why must something be physically present and always awake? Why doesn’t a phone app already solve this? 
+The 3 a.m. test: why must something be physically present and always awake? Why doesn't a phone app already solve this? 
 
-The device must be physically present to detect activity in the blind spots of cyclists. A phone app could not solve this problem because it is not equipped with the correct motion detection sensors.
+The sensors must be physically mounted outside the car, aimed at the blind spot, and awake the whole time the car is moving; neither sensor works through glass. A phone in the cabin has no rear-facing radar or ranging sensor and can't see the blind spot.
 
 ## The sensors 
 Which two (or more), and how they COOPERATE (fused, correlated, or one pipeline) rather than merely coexist. 
 
-A motion sensor would send feedback to some sort of indicator. A sound sensor could also send feedback to the indicator if a loud sound like a horn was made around you. 
+- HLK-LD2451 24GHz radar (UART, ~10Hz), facing rearward along the right side: range, speed, and approach direction at roughly 5-50m.
+- HC-SR04 ultrasonic (~20Hz; JSN-SR04T for the outdoor build), facing sideways: confirms something is in the 0.2-4m blind-spot zone.
+
+They are fused by a state machine that hands off between the two range bands: CLEAR -> APPROACHING (radar sees an approaching target) -> IN_ZONE (ultrasonic detects something consistent with the radar's last track) -> CLEAR. Neither sensor alone raises the alert.
 
 ## The mechanisms 
 First guess at two items from the Section 3.2 menu, one sentence of justification each. Allowed to change by the design doc. 
 
 C. Real-time scheduling (SCHED_FIFO/SCHED_RR) for a latency-critical path. 
 
-We could measure how accurately and quickly the system picks up incoming cars. 
+Ultrasonic range comes from timing the echo pulse, and 1ms of timing jitter is about 17cm of range error, so the capture path needs SCHED_FIFO.
 
 E. A multi-process architecture: sensors isolated in separate processes, a hub aggregating over IPC (shared memory, message queues, or Unix domain sockets), a supervisor that survives any child dying.
 
-There would be 2 sensors (1 on each side), which would act independently of one another. 
+One process per sensor plus a fusion hub under a supervisor, so an unplugged or crashed sensor degrades the system instead of taking it down.
+
+(D, the storage layer, is a candidate third: ignition-off cuts power mid-write.)
 
 ## The risk 
 The single thing most likely to sink this project. Name it now; it is cheaper to meet in Week 5 than in Week 14.
 
-The sensors may not have enough range to indicate to the cyclist with enough time for them to make a decision. 
+The radar may not detect cyclists far enough out. Its ~100m spec is for cars; a cyclist is a much smaller target. Go/no-go test: a cyclist passes the parked car, logging first-detect range over 5+ passes, with a target of at least 20m.
