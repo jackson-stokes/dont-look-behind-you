@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 505" width="980" height="505" font-family="Helvetica, Arial, sans-serif" font-size="11">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+    </marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b03030"/>
+    </marker>
+    <style>
+      .proc { fill: #eef3fb; stroke: #3a5a99; stroke-width: 1.4; }
+      .sup  { fill: #fbeeee; stroke: #b03030; stroke-width: 1.4; }
+      .hw   { fill: #eeeeee; stroke: #888; stroke-width: 1.2; }
+      .act  { fill: #f6f6f6; stroke: #888; stroke-width: 1.2; stroke-dasharray: 5 3; }
+      .name { font-family: Menlo, Consolas, monospace; font-size: 12.5; font-weight: bold; fill: #1d2b45; }
+      .sub  { font-size: 10.5; fill: #333; }
+      .hwt  { font-size: 12; font-weight: bold; fill: #333; }
+      .lbl  { font-size: 10.5; fill: #222; }
+      .red  { fill: #b03030; }
+      .data { stroke: #444; stroke-width: 1.4; fill: none; }
+      .supv { stroke: #b03030; stroke-width: 1.3; fill: none; stroke-dasharray: 5 3; }
+    </style>
+  </defs>
+
+  <rect width="980" height="505" fill="#fff"/>
+
+  <!-- ===== user space, row 1 ===== -->
+  <rect class="proc" x="20" y="44" width="130" height="70" rx="5"/>
+  <text x="85" y="72" text-anchor="middle" class="name">cap-radar (C)</text>
+  <text x="85" y="90" text-anchor="middle" class="sub">frame sync, parse</text>
+  <text x="85" y="104" text-anchor="middle" class="sub">targets</text>
+
+  <rect class="proc" x="170" y="44" width="150" height="70" rx="5"/>
+  <text x="245" y="72" text-anchor="middle" class="name">cap-sonar (C)</text>
+  <text x="245" y="90" text-anchor="middle" class="sub">16 Hz trigger,</text>
+  <text x="245" y="104" text-anchor="middle" class="sub">echo-edge timing</text>
+
+  <rect class="proc" x="420" y="44" width="170" height="70" rx="5"/>
+  <text x="505" y="68" text-anchor="middle" class="name">fuse-hub (C)</text>
+  <text x="505" y="86" text-anchor="middle" class="sub">CLEAR → APPROACHING</text>
+  <text x="505" y="100" text-anchor="middle" class="sub">→ IN_ZONE → CLEAR</text>
+
+  <rect class="proc" x="690" y="44" width="110" height="70" rx="5"/>
+  <text x="745" y="72" text-anchor="middle" class="name">alert (C)</text>
+  <text x="745" y="90" text-anchor="middle" class="sub">LED + buzzer,</text>
+  <text x="745" y="104" text-anchor="middle" class="sub">fault pattern</text>
+
+  <rect class="proc" x="820" y="44" width="140" height="70" rx="5"/>
+  <text x="890" y="72" text-anchor="middle" class="name">status-lcd</text>
+  <text x="890" y="90" text-anchor="middle" class="sub">bench / demo only,</text>
+  <text x="890" y="104" text-anchor="middle" class="sub">never while driving</text>
+
+  <!-- ===== user space, row 2 ===== -->
+  <rect class="proc" x="420" y="170" width="170" height="60" rx="5"/>
+  <text x="505" y="194" text-anchor="middle" class="name">store (D)</text>
+  <text x="505" y="212" text-anchor="middle" class="sub">append log, crash-consistent</text>
+
+  <rect class="sup" x="610" y="170" width="170" height="60" rx="5"/>
+  <text x="695" y="189" text-anchor="middle" class="name" fill="#7a1f1f">dlby-super (E)</text>
+  <text x="695" y="205" text-anchor="middle" class="sub">1 Hz heartbeats in (UDS 8 B)</text>
+  <text x="695" y="219" text-anchor="middle" class="sub red">restart on hang or crash</text>
+
+  <!-- ===== data flows between processes ===== -->
+  <!-- cap-radar -> fuse-hub, routed over the top -->
+  <path class="data" d="M85,44 V26 H470 V43" marker-end="url(#a)"/>
+  <text x="280" y="20" text-anchor="middle" class="lbl">UDS 64 B @ 10 Hz</text>
+
+  <!-- cap-sonar -> fuse-hub -->
+  <path class="data" d="M320,79 H419" marker-end="url(#a)"/>
+  <text x="370" y="73" text-anchor="middle" class="lbl">UDS 24 B</text>
+  <text x="370" y="93" text-anchor="middle" class="lbl">@ 16 Hz</text>
+
+  <!-- fuse-hub -> alert -->
+  <path class="data" d="M590,79 H689" marker-end="url(#a)"/>
+  <text x="640" y="73" text-anchor="middle" class="lbl">UDS 16 B</text>
+  <text x="640" y="93" text-anchor="middle" class="lbl">change + 2 Hz</text>
+
+  <!-- fuse-hub -> status-lcd, routed over the top -->
+  <path class="data" d="M560,44 V26 H890 V43" marker-end="url(#a)"/>
+  <text x="725" y="20" text-anchor="middle" class="lbl">UDS 64 B @ 2 Hz</text>
+
+  <!-- fuse-hub -> store -->
+  <path class="data" d="M450,114 V169" marker-end="url(#a)"/>
+  <text x="444" y="136" text-anchor="end" class="lbl">UDS</text>
+  <text x="444" y="148" text-anchor="end" class="lbl">~1.1 KB/s</text>
+
+  <!-- ===== supervision rail (E) ===== -->
+  <path class="supv" d="M115,158 H860"/>
+  <path class="supv" d="M700,170 V158"/>
+  <path class="supv" d="M115,158 V115" marker-end="url(#r)"/>
+  <path class="supv" d="M300,158 V115" marker-end="url(#r)"/>
+  <path class="supv" d="M540,158 V115" marker-end="url(#r)"/>
+  <path class="supv" d="M575,158 V169" marker-end="url(#r)"/>
+  <path class="supv" d="M745,158 V115" marker-end="url(#r)"/>
+  <path class="supv" d="M860,158 V115" marker-end="url(#r)"/>
+
+  <!-- ===== flows through the kernel ===== -->
+  <!-- radar: hardware -> kernel -> cap-radar -->
+  <path class="data" d="M70,370 V303" marker-end="url(#a)"/>
+  <path class="data" d="M70,262 V115" marker-end="url(#a)"/>
+  <text x="76" y="196" class="lbl">read()</text>
+  <text x="76" y="208" class="lbl">≤1.3 KB/s</text>
+  <text x="76" y="326" class="lbl">UART 115200</text>
+  <text x="76" y="338" class="lbl">~10 frames/s</text>
+
+  <!-- sonar trigger: cap-sonar -> kernel -> HC-SR04 -->
+  <path class="data" d="M215,114 V261" marker-end="url(#a)"/>
+  <path class="data" d="M215,302 V369" marker-end="url(#a)"/>
+  <text x="209" y="202" text-anchor="end" class="lbl">16 Hz</text>
+  <text x="209" y="326" text-anchor="end" class="lbl">trigger</text>
+  <text x="209" y="338" text-anchor="end" class="lbl">10 µs</text>
+
+  <!-- sonar echo: HC-SR04 -> kernel -> cap-sonar -->
+  <path class="data" d="M275,370 V303" marker-end="url(#a)"/>
+  <path class="data" d="M275,262 V115" marker-end="url(#a)"/>
+  <text x="281" y="196" class="lbl">edge events</text>
+  <text x="281" y="208" class="lbl">32 /s</text>
+  <text x="281" y="326" class="lbl">echo pulse</text>
+  <text x="281" y="338" class="lbl">2 edges / ping</text>
+
+  <!-- store -> ext4 -->
+  <path class="data" d="M505,230 V261" marker-end="url(#a)"/>
+  <text x="511" y="246" class="lbl">~1.1 KB/s</text>
+
+  <!-- alert -> kernel -> LED + buzzer -->
+  <path class="data" d="M792,114 V261" marker-end="url(#a)"/>
+  <path class="data" d="M792,302 V369" marker-end="url(#a)"/>
+  <text x="786" y="326" text-anchor="end" class="lbl">GPIO 17 / 22</text>
+  <text x="786" y="338" text-anchor="end" class="lbl">on change</text>
+
+  <!-- status-lcd -> kernel -> LCD -->
+  <path class="data" d="M930,114 V261" marker-end="url(#a)"/>
+  <path class="data" d="M930,302 V369" marker-end="url(#a)"/>
+  <text x="924" y="326" text-anchor="end" class="lbl">I2C1</text>
+  <text x="924" y="338" text-anchor="end" class="lbl">2 Hz</text>
+
+  <!-- ===== kernel/user boundary ===== -->
+  <path d="M10,252 H970" stroke="#999" stroke-width="1" stroke-dasharray="6 4"/>
+  <rect x="318" y="244" width="124" height="16" fill="#fff"/>
+  <text x="380" y="256" text-anchor="middle" class="lbl" fill="#666">kernel / user boundary</text>
+
+  <!-- ===== kernel bar ===== -->
+  <rect x="10" y="262" width="960" height="40" rx="4" fill="#2a2a2a"/>
+  <g fill="#fff" font-size="11" text-anchor="middle">
+    <text x="85" y="286">RP1 UART / tty</text>
+    <text x="245" y="286">gpiochip (kernel timestamps)</text>
+    <text x="505" y="286">ext4 on SD</text>
+    <text x="745" y="286">gpiochip out</text>
+    <text x="895" y="286">I2C1 (i2c-dev)</text>
+  </g>
+
+  <!-- ===== hardware ===== -->
+  <rect class="hw" x="20" y="370" width="130" height="60" rx="5"/>
+  <text x="85" y="395" text-anchor="middle" class="hwt">LD2451 radar</text>
+  <text x="85" y="412" text-anchor="middle" class="sub">rearward, 5–50 m</text>
+
+  <rect class="hw" x="170" y="370" width="150" height="60" rx="5"/>
+  <text x="245" y="395" text-anchor="middle" class="hwt">HC-SR04 ultrasonic</text>
+  <text x="245" y="412" text-anchor="middle" class="sub">sideways, 0.2–4 m</text>
+
+  <rect class="act" x="720" y="370" width="130" height="60" rx="5"/>
+  <text x="785" y="395" text-anchor="middle" class="hwt">LED + buzzer</text>
+  <text x="785" y="412" text-anchor="middle" class="sub">actuator (driver alert)</text>
+
+  <rect class="hw" x="870" y="370" width="100" height="60" rx="5"/>
+  <text x="920" y="395" text-anchor="middle" class="hwt">1602 LCD</text>
+  <text x="920" y="412" text-anchor="middle" class="sub">bench only</text>
+
+  <!-- ===== legend ===== -->
+  <rect x="340" y="446" width="630" height="52" rx="5" fill="none" stroke="#bbb" stroke-dasharray="4 3"/>
+  <text x="352" y="464" class="lbl">C = SCHED_FIFO on the alert chain (cap-* 60 &lt; fuse-hub 70 &lt; alert 80) · D = crash-consistent storage</text>
+  <text x="352" y="478" class="lbl">E = multi-process + supervisor (dashed red) · UDS = Unix domain socket, SOCK_SEQPACKET</text>
+  <text x="352" y="492" class="lbl">store is off the alert path: fuse-hub forwards a copy, so a slow SD write can't delay an alert</text>
+</svg>
