@@ -21,14 +21,14 @@ Which two (or more), and how they COOPERATE (fused, correlated, or one pipeline)
 - HLK-LD2451 24GHz radar (UART, ~10Hz), facing rearward along the right side: range, speed, and approach direction at roughly 5-50m.
 - HC-SR04 ultrasonic (~20Hz; JSN-SR04T for the outdoor build), facing sideways: confirms something is in the 0.2-4m blind-spot zone.
 
-They are fused by a state machine that hands off between the two range bands: CLEAR -> APPROACHING (radar sees an approaching target) -> IN_ZONE (ultrasonic detects something consistent with the radar's last track) -> CLEAR. Neither sensor alone raises the alert.
+They are fused by a state machine that hands off between the two range bands: CLEAR -> APPROACHING (radar sees an approaching target) -> IN_ZONE (ultrasonic detects something consistent with the radar's last track) -> CLEAR. With both healthy, radar alone can warn (APPROACHING) but IN_ZONE needs ultrasonic confirmation; if one is lost, the survivor warns in a degraded pattern.
 
 ## The mechanisms 
 First guess at two items from the Section 3.2 menu, one sentence of justification each. Allowed to change by the design doc. 
 
 C. Real-time scheduling (SCHED_FIFO/SCHED_RR) for a latency-critical path. 
 
-Ultrasonic range comes from timing the echo pulse, and 1ms of timing jitter is about 17cm of range error, so the capture path needs SCHED_FIFO.
+A warning reaches the driver through three processes (sensor capture, fusion, alert), and under CPU or disk load each hand-off can be delayed by tens of milliseconds, so the whole alert chain needs SCHED_FIFO to keep that delay bounded.
 
 E. A multi-process architecture: sensors isolated in separate processes, a hub aggregating over IPC (shared memory, message queues, or Unix domain sockets), a supervisor that survives any child dying.
 
