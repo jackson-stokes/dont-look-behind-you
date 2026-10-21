@@ -12,13 +12,13 @@ Storage is deliberately off the alert path, so a slow SD write can never delay a
 
 | Process | Owner | Role | Scheduling |
 |---|---|---|---|
-| `dlby-super` | shared | starts, watches, restarts children | FIFO 90, mostly asleep |
+| `dlby-super` | Jackson | starts, watches, restarts children | FIFO 90, mostly asleep |
 | `cap-radar` | Gage | reads and parses radar frames | FIFO 60 |
 | `cap-sonar` | Gage | 60 ms trigger, kernel-stamped echo edges | FIFO 60 |
 | `fuse-hub` | Jackson | fusion state machine; own staleness timeout per sensor (radar 1 s, ultrasonic 8 pings, or EOF) | FIFO 70 |
-| `alert` | shared | LED and buzzer patterns | FIFO 80 |
+| `alert` | Jackson | LED and buzzer patterns | FIFO 80 |
 | `store` | Jackson | power-cut-safe append log | OTHER, nice +5 |
-| `status-lcd` | shared | bench LCD, kept apart from `alert` | OTHER |
+| `status-lcd` | Jackson | bench LCD, kept apart from `alert` | OTHER |
 
 **IPC.** Every link is a Unix domain socket (UDS), `SOCK_SEQPACKET`. Receivers listen on
 `/run/dlby/<name>.sock`. Senders reconnect with backoff (50 ms to 1 s) on EOF, `EPIPE`, or
@@ -151,8 +151,14 @@ Limits:
 ext4's journal keeps the file system consistent; the CRCs make our records trustworthy.
 
 ## 5. Constraints and substitutions
-TODO. Known so far: stock Pi OS is not a PREEMPT_RT kernel, so SCHED_FIFO bounds
-scheduling delay but not delay from non-preemptible kernel sections.
+| Ideal | Actual | Cost |
+|---|---|---|
+| JSN-SR04T | HC-SR04 | not waterproof: bench only |
+| radar proven on cyclists | LD2451, rated for cars | range unproven until ≥ 20 m test |
+| PREEMPT_RT | stock Pi OS | non-preemptible kernel sections unbounded |
+| car in traffic | empty lot, slow passes | low-speed claims only |
+| live sensors | replay (Jackson is remote) | tests logic, not sensing |
+| FIFO for range | FIFO for latency | claim narrowed (§2 C) |
 
 ## 6. Evaluation plan
 
@@ -171,5 +177,35 @@ load; mean and std should not change.
 Sensor periods (60 ms, 100 ms) dominate end-to-end detection time and are reported
 separately; C controls only the part scheduling adds.
 
+### Domain, mechanism and soak tests
+| Measurement | Method | Target |
+|---|---|---|
+| Radar range, cyclist | 5+ passes, hand-logged | ≥ 20 m (go/no-go) |
+| Detection | ≥ 30 hand-logged passes | ≥ 90 % found; ≤ 1 false / 10 min |
+| E restart | kill each child | ≤ 1 s to first message |
+| D power cut | 50 cuts mid-write | 0 bad records kept; loss ≤ 1 s; `last_seq` = last kept, next = +1 |
+| Fault injection | each §3 row once | matching §3 log line |
+| 48 h soak | hourly CPU, RSS | no unexplained restarts; RSS +< 1 MB/process; CPU < 10 % |
+
 ## 7. Ownership map
-TODO
+| Owner | Owns |
+|---|---|
+| Jackson | `fuse-hub`, `store`, `dlby-super`, `alert`, `status-lcd`, replay harness, evaluation analysis, PROBLEM.md, DESIGN.md |
+| Gage | `cap-radar`, `cap-sonar`, wiring and sensor pod, bench sketch, hardware tests, data capture |
+| Shared | 48 h soak, demo, evaluation report |
+
+## 8. AI-use plan
+**We use AI for** planning and design review, explaining OS concepts, drafting code, test and
+replay-data tools, and reviewing each other's PRs. **We don't use it for** anything at
+runtime, accepting code we can't explain, weakening or deleting tests to make them pass, or
+proposing hardware fixes without evidence (dmesg, timing captures, `/proc/interrupts`).
+
+**Keeping the boundary visible:**
+- Product code lives only in `src/`. Python and other tools live in `tools/` and are never
+  deployed.
+- `make check-boundary`, run by `make test`, fails if `src/` contains `AF_INET`/`AF_INET6`
+  sockets, a `connect()` to anything but `AF_UNIX`, `getaddrinfo`, or an HTTP/curl library.
+  It's a text check, so it can miss things; the next bullet is the real enforcement.
+- The systemd unit sets `RestrictAddressFamilies=AF_UNIX` and `IPAddressDeny=any`, so the
+  kernel blocks any network use at runtime, even if the code tried.
+- AI session transcripts are committed to `docs/transcripts/` at the end of each milestone.

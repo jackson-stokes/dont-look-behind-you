@@ -26,10 +26,13 @@ logged. The 48-hour soak is the test suite of last resort.
 - NEVER weaken, skip, or delete a test to make the suite pass.
 
 ## Ownership
-- alice/: capture pipeline, kernel-facing code (src/capture, src/drv)
-- bob/: storage layer, analysis engine (src/store, src/analysis)
-- Shared: supervisor, interface. The agent edits outside the current
-session owner’s area only when told explicitly whose session this is.
+- Gage: capture pipeline, kernel-facing code (src/capture, src/drv), sensor pod, bench sketch
+- Jackson: storage, analysis/fusion, supervisor, alert and LCD interface
+  (src/store, src/analysis, supervisor, interface), replay harness
+- Shared: 48h soak, demo, evaluation report.
+
+The agent edits outside the current session owner’s area only when told explicitly whose
+session this is.
 
 ## Style
 - Systems core: C17, -Wall -Wextra -Werror, no VLAs.
