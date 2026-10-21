@@ -80,8 +80,13 @@ Losing range data would take >250 ms of starvation to overflow the 16-event edge
 (`sched_rt_runtime_us` = 950 ms/s) stays on, so a spinning child can't starve the system,
 and `dlby-super` at priority 90 can still kill it.
 
-### D: crash-consistent storage
-TODO
+### D: crash-consistent storage (`store`)
+**Reason:** the ignition cuts power with no warning, many times a day, and this log is our
+evidence for the evaluation (§6) and the 48 h soak. If a power cut could leave it garbled,
+no result would be provable. So every record must be either complete and checkable, or
+detectably incomplete and removed. `store` does this with append-only segments, a CRC on
+every record, timed `fdatasync`, and truncation on boot (§4). It runs off the alert path,
+so none of this can delay a warning.
 
 ### E: multi-process architecture with a supervisor
 **Reason:** an outdoor sensor pod will fail in ordinary use (loose cable, water, a
@@ -133,7 +138,17 @@ Limits:
 - Single-sensor warnings add false alarms (parked cars, poles) to avoid going silent.
 
 ## 4. Storage and data
-TODO
+
+| Item | Design |
+|---|---|
+| What | every sensor message, every state change, and a `GAP` record (with the dropped count) whenever `store` starts |
+| Rate | ~1.3 KB/s (1.1 KB/s of messages plus record headers): ~4.8 MB/h, ~230 MB per 48 h soak |
+| Format | append-only segments `/var/lib/dlby/log/seg-NNNNNN.log`. Each record has an 11-byte header, `len` u16, `type` u8, `seq` u32 (one counter for the whole log, continued across boots), `crc32` u32 over len + type + seq + payload, followed by the message exactly as received. Because messages are stored unchanged, the log is also the replay harness's input |
+| Retention | 8 MB segments (~1.7 h), 512 MB cap (~4.5 days of driving); the oldest segment is deleted first. If the card is still full, state changes only |
+| Durability | each record is a direct `write()`; `fdatasync` every 1 s and after each state change; `fsync` the directory after creating a segment |
+| Power cut mid-write | loses ≤ ~1 s of samples, never a synced state change. On boot, truncate after the last record whose length and CRC check out; start a new segment with a `GAP` record |
+
+ext4's journal keeps the file system consistent; the CRCs make our records trustworthy.
 
 ## 5. Constraints and substitutions
 TODO. Known so far: stock Pi OS is not a PREEMPT_RT kernel, so SCHED_FIFO bounds
