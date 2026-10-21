@@ -29,7 +29,7 @@ seqpacket because it keeps message boundaries and reports a dead peer at once as
 **Rates.** The diagram gives the payload and rate on every link. The busiest is
 `fuse-hub` → `store` at ~1.1 KB/s (~4 MB/h, ~190 MB per 48 h soak). The radar UART carries
 ≤1.3 KB/s of its 11.5 KB/s capacity. To confirm on hardware: the ultrasonic rate is
-16 Hz, not HARDWARE.md's "~20 Hz", because the HC-SR04 needs ≥60 ms between pings. The
+16 Hz, because the HC-SR04 needs ≥60 ms between pings. The
 radar message size (~64 B) is an estimate until the LD2451 frame format is checked.
 
 ### Fusion states and driver signals

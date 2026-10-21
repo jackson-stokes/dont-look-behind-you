@@ -7,10 +7,10 @@ Status as of 2026-10-12. Feeds the M2 design document.
 - **Moment:** while driving, a cyclist comes up in the right-side blind spot just before a right turn (the "right-hook").
 - **Sensors (fused, §3.1):**
   - **HLK-LD2451 24GHz radar** (UART, ~10Hz): rearward along the right side; range, speed and approach direction at roughly 5–50m+.
-  - **HC-SR04 ultrasonic** (trigger/echo, ~20Hz): sideways out of the right rear quarter; confirms something is in the 0.2–4m blind-spot zone.
-  - **Fusion:** a state machine hands off between the two range bands, CLEAR → APPROACHING (radar) → IN_ZONE (ultrasonic, consistent with the radar's last track) → CLEAR. Neither sensor alone raises the alert.
+  - **HC-SR04 ultrasonic** (trigger/echo, 16Hz: needs ≥60ms between pings): sideways out of the right rear quarter; confirms something is in the 0.2–4m blind-spot zone.
+  - **Fusion:** a state machine hands off between the two range bands, CLEAR → APPROACHING (radar) → IN_ZONE (ultrasonic, consistent with the radar's last track) → CLEAR. With both healthy, radar alone can warn (APPROACHING) but IN_ZONE needs ultrasonic confirmation; if one is lost, the survivor warns in a degraded pattern.
 - **Mechanisms (§3.2):**
-  - **C (SCHED_FIFO):** 1ms of echo-timing jitter is about 17cm of range error.
+  - **C (SCHED_FIFO):** bounds alert latency across capture → fusion → alert under load. Range accuracy doesn't need it, because echo edges are kernel-timestamped (see DESIGN.md §2).
   - **E (multi-process + supervisor):** one process per sensor plus a fusion hub, so unplugging a sensor degrades the system instead of crashing it.
   - **D (storage layer):** a natural fit, since ignition-off cuts power mid-write.
 
