@@ -82,6 +82,3 @@ Sketch: `tools/bench/ld2451_hcsr04_bench/ld2451_hcsr04_bench.ino`
 3. **The car's own motion:** filter on approaching targets.
 4. **Testing safely:** parked first, then slow passes in an empty lot. The driver never reads the LCD while moving.
 5. **"Why not factory blind-spot monitoring?":** argue for older cars, and for factory systems that are tuned to cars and miss cyclists.
-
-## Pending team decision
-PROBLEM.md still describes the bike version. It needs revising (user → driver; sensors → radar + ultrasonic, fused; mechanisms C + E; new top risk) once both partners agree.
