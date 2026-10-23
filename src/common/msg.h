@@ -23,6 +23,7 @@ enum msg_type {
 	MSG_SONAR = 2,
 	MSG_ALERT = 3,
 	MSG_HB    = 4,
+	MSG_GAP   = 5,
 };
 
 /* Fusion states carried to `alert` (DESIGN.md §1). HUB_LOST is alert's own. */
@@ -80,6 +81,15 @@ struct alert_msg {		/* fuse-hub -> alert, on change + 2 Hz */
 	uint64_t origin_ns;	/* origin of the reading that caused this state */
 };
 
+struct gap_msg {		/* fuse-hub -> store, on reconnect after drops */
+	uint8_t  type;		/* MSG_GAP */
+	uint8_t  pad[3];
+	uint32_t seq;
+	uint64_t origin_ns;	/* when the link came back */
+	uint32_t dropped;	/* records dropped while store was away */
+	uint32_t pad2;
+};
+
 /* Heartbeats only travel on dlby-super's per-child socketpairs. */
 struct hb_msg {
 	uint8_t  type;		/* MSG_HB */
@@ -94,12 +104,15 @@ static_assert(sizeof(struct radar_msg) == 64, "radar_msg size");
 static_assert(sizeof(struct sonar_msg) == 24, "sonar_msg size");
 static_assert(sizeof(struct alert_msg) == 16, "alert_msg size");
 static_assert(sizeof(struct hb_msg) == 8, "hb_msg size");
+static_assert(sizeof(struct gap_msg) == 24, "gap_msg size");
 static_assert(offsetof(struct radar_msg, seq) == 4 && offsetof(struct radar_msg, origin_ns) == 8,
 	      "radar_msg header");
 static_assert(offsetof(struct sonar_msg, seq) == 4 && offsetof(struct sonar_msg, origin_ns) == 8,
 	      "sonar_msg header");
 static_assert(offsetof(struct alert_msg, seq) == 4 && offsetof(struct alert_msg, origin_ns) == 8,
 	      "alert_msg header");
+static_assert(offsetof(struct gap_msg, seq) == 4 && offsetof(struct gap_msg, origin_ns) == 8,
+	      "gap_msg header");
 static_assert(offsetof(struct hb_msg, seq) == 4, "hb_msg header");
 
 /* Expected length for a message type, or 0 if the type is unknown. */
@@ -110,6 +123,7 @@ static inline size_t msg_size(uint8_t type)
 	case MSG_SONAR: return sizeof(struct sonar_msg);
 	case MSG_ALERT: return sizeof(struct alert_msg);
 	case MSG_HB:    return sizeof(struct hb_msg);
+	case MSG_GAP:   return sizeof(struct gap_msg);
 	default:        return 0;
 	}
 }

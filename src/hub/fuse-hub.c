@@ -1,9 +1,9 @@
-/* fuse-hub, minimal (M3 step 2): receives cap-radar/cap-sonar messages, validates
- * them and tracks per-sensor health (DESIGN.md §1, §3).
+/* fuse-hub, minimal (M3 steps 2-3): receives cap-radar/cap-sonar messages,
+ * validates them, tracks per-sensor health (DESIGN.md §1, §3) and forwards a
+ * copy of every message, plus each state change, to store.
  *
- * Not yet: APPROACHING/IN_ZONE fusion, forwarding to alert and store, the
- * heartbeat to dlby-super (it goes in the main loop below), SCHED_FIFO 70 and
- * mlockall.
+ * Not yet: APPROACHING/IN_ZONE fusion, forwarding to alert, the heartbeat to
+ * dlby-super (it goes in the main loop below), SCHED_FIFO 70 and mlockall.
  *
  * Exit codes: 0 on SIGTERM/SIGINT, 69 if the socket can't be set up, 70 on any
  * other unexpected failure.
@@ -37,16 +37,66 @@ struct hub {
 	uint64_t rx[SENSOR_N];
 	uint64_t rejected;
 	struct log_limit lim_bad, lim_full, lim_accept;
+
+	/* Link to store: off the alert path, so sends never block and a missing
+	 * store only costs records, counted here and reported on reconnect. */
+	struct ipc_conn store;
+	uint32_t out_seq;	/* seq of messages the hub itself originates */
+	uint64_t store_fwd, store_dropped, store_pending;
 };
 
-static void report_up(struct hub *hub, enum sensor s)
+static void store_send(struct hub *hub, const void *buf, size_t len, int64_t now)
+{
+	struct gap_msg g;
+
+	if (hub->store_pending) {
+		memset(&g, 0, sizeof(g));
+		g.type = MSG_GAP;
+		g.seq = hub->out_seq++;
+		g.origin_ns = (uint64_t)now;
+		g.dropped = hub->store_pending > UINT32_MAX ? UINT32_MAX : (uint32_t)hub->store_pending;
+		if (ipc_send(&hub->store, &g, sizeof(g), now) < 0)
+			goto drop;
+		log_msg(LOG_I, "store_back dropped=%" PRIu64, hub->store_pending);
+		hub->store_pending = 0;
+	}
+	if (ipc_send(&hub->store, buf, len, now) == 0) {
+		hub->store_fwd++;
+		return;
+	}
+drop:
+	hub->store_pending++;
+	hub->store_dropped++;
+}
+
+static void send_state(struct hub *hub, int64_t now)
+{
+	static const uint8_t to_fuse[] = {
+		[H_BLIND] = ST_BLIND,
+		[H_DEG]   = ST_DEG_CLEAR,
+		[H_OK]    = ST_CLEAR,
+	};
+	struct alert_msg m;
+
+	memset(&m, 0, sizeof(m));
+	m.type = MSG_ALERT;
+	m.state = to_fuse[health_state(&hub->h)];
+	m.lost_mask = (uint8_t)((hub->h.up[SENSOR_RADAR] ? 0 : LOST_RADAR) |
+				(hub->h.up[SENSOR_SONAR] ? 0 : LOST_SONAR));
+	m.seq = hub->out_seq++;
+	m.origin_ns = (uint64_t)now;
+	store_send(hub, &m, sizeof(m), now);
+}
+
+static void report_up(struct hub *hub, enum sensor s, int64_t now)
 {
 	log_msg(LOG_I, "sensor_up name=%s", sensor_name(s));
 	if (health_state(&hub->h) == H_OK)
 		log_msg(LOG_I, "healthy");
+	send_state(hub, now);
 }
 
-static void report_lost(struct hub *hub, unsigned mask, const char *reason)
+static void report_lost(struct hub *hub, unsigned mask, const char *reason, int64_t now)
 {
 	int s;
 
@@ -54,11 +104,12 @@ static void report_lost(struct hub *hub, unsigned mask, const char *reason)
 		return;
 	if (health_state(&hub->h) == H_BLIND) {
 		log_msg(LOG_E, "blind lost=radar,sonar reason=%s", reason);
-		return;
+	} else {
+		for (s = 0; s < SENSOR_N; s++)
+			if (mask & (1u << s))
+				log_msg(LOG_W, "degraded lost=%s reason=%s", sensor_name(s), reason);
 	}
-	for (s = 0; s < SENSOR_N; s++)
-		if (mask & (1u << s))
-			log_msg(LOG_W, "degraded lost=%s reason=%s", sensor_name(s), reason);
+	send_state(hub, now);
 }
 
 /* Another open connection still feeds s (e.g. a restarted cap-* that connected
@@ -73,7 +124,7 @@ static bool fed_elsewhere(const struct hub *hub, int skip, int s)
 	return false;
 }
 
-static void drop_client(struct hub *hub, int i, const char *reason)
+static void drop_client(struct hub *hub, int i, const char *reason, int64_t now)
 {
 	struct client *c = &hub->cl[i];
 	int s = c->sensor;
@@ -84,7 +135,7 @@ static void drop_client(struct hub *hub, int i, const char *reason)
 	c->fd = -1;
 	c->sensor = -1;
 	if (s >= 0 && !fed_elsewhere(hub, i, s) && health_eof(&hub->h, s))
-		report_lost(hub, 1u << s, reason);
+		report_lost(hub, 1u << s, reason, now);
 }
 
 /* Returns -1 only on an unexpected accept() failure. */
@@ -132,11 +183,11 @@ static void read_client(struct hub *hub, int i, int64_t now)
 			return;
 		}
 		log_msg(LOG_W, "recv_failed err=%s", strerror(errno));
-		drop_client(hub, i, "error");
+		drop_client(hub, i, "error", now);
 		return;
 	}
 	if (n == 0) {
-		drop_client(hub, i, "eof");
+		drop_client(hub, i, "eof", now);
 		return;
 	}
 
@@ -156,8 +207,9 @@ static void read_client(struct hub *hub, int i, int64_t now)
 	}
 	c->sensor = s;
 	hub->rx[s]++;
+	store_send(hub, buf, (size_t)n, now);	/* as received */
 	if (health_rx(&hub->h, s, now))
-		report_up(hub, s);
+		report_up(hub, s, now);
 }
 
 static int signal_fd(void)
@@ -207,6 +259,11 @@ int main(void)
 		rc = EX_UNAVAILABLE;
 		goto out;
 	}
+	if (ipc_conn_init(&hub.store, "store") < 0) {
+		log_msg(LOG_E, "store_path_failed err=%s", strerror(errno));
+		rc = EX_UNAVAILABLE;
+		goto out;
+	}
 	now = dlby_now_ns();
 	if (now < 0) {
 		log_msg(LOG_E, "clock_failed err=%s", strerror(errno));
@@ -214,6 +271,7 @@ int main(void)
 	}
 	next_stats = now + STATS_NS;
 	log_msg(LOG_I, "start sock=%s", path);
+	send_state(&hub, now);	/* BLIND */
 
 	for (;;) {
 		pfd[0] = (struct pollfd){ .fd = sfd, .events = POLLIN };
@@ -256,7 +314,7 @@ int main(void)
 			if (pfd[i].revents)
 				read_client(&hub, slot[i], now);
 
-		report_lost(&hub, health_tick(&hub.h, now), "stale");
+		report_lost(&hub, health_tick(&hub.h, now), "stale", now);
 
 		/* TODO(super step): heartbeat to dlby-super here, from this loop. */
 		if (now >= next_stats) {
@@ -274,6 +332,9 @@ out:
 		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
 	if (sfd >= 0 && close(sfd) < 0)
 		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
+	ipc_conn_close(&hub.store);
+	log_msg(LOG_I, "store_link forwarded=%" PRIu64 " dropped=%" PRIu64, hub.store_fwd,
+		hub.store_dropped);
 	log_msg(rc == EX_OK ? LOG_I : LOG_E, "exit code=%d radar=%" PRIu64 " sonar=%" PRIu64
 		" rejected=%" PRIu64, rc, hub.rx[SENSOR_RADAR], hub.rx[SENSOR_SONAR], hub.rejected);
 	return rc;

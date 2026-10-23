@@ -19,7 +19,14 @@ LIB        := $(BUILD)/libdlby_common.a
 HUB_HDR := $(wildcard src/hub/*.h)
 HUB_LIB := $(BUILD)/libdlby_hub.a
 
-BINS := $(BUILD)/fuse-hub $(BUILD)/tools/fake-sensors
+STORE_HDR := $(wildcard src/store/*.h)
+STORE_LIB := $(BUILD)/libdlby_store.a
+
+APP_HDR  := $(COMMON_HDR) $(HUB_HDR) $(STORE_HDR)
+APP_INC  := -Isrc/hub -Isrc/store
+APP_LIBS := $(HUB_LIB) $(STORE_LIB) $(LIB)
+
+BINS := $(BUILD)/fuse-hub $(BUILD)/store $(BUILD)/tools/fake-sensors $(BUILD)/tools/dlby-logcat
 
 TEST_SRC := $(wildcard tests/test_*.c)
 TESTS    := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%)
@@ -46,17 +53,30 @@ $(HUB_LIB): $(BUILD)/hub/health.o
 $(BUILD)/fuse-hub: $(BUILD)/hub/fuse-hub.o $(HUB_LIB) $(LIB)
 	$(CC) $(ALL_CFLAGS) -o $@ $^
 
-$(BUILD)/tools/%: tools/%.c $(HUB_HDR) $(COMMON_HDR) $(LIB)
+# Objects under obj/store/: $(BUILD)/store is the binary.
+$(BUILD)/obj/store/%.o: src/store/%.c $(STORE_HDR) $(COMMON_HDR)
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) -Isrc/hub $(ALL_CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CPPFLAGS) -Isrc/store $(ALL_CFLAGS) -c -o $@ $<
 
-$(BUILD)/tests/%: tests/%.c tests/check.h $(HUB_HDR) $(COMMON_HDR) $(HUB_LIB) $(LIB)
+# store's testable parts (everything but main), linked into the tests and tools.
+$(STORE_LIB): $(BUILD)/obj/store/record.o $(BUILD)/obj/store/seglog.o
+	$(AR) rcs $@ $^
+
+$(BUILD)/store: $(BUILD)/obj/store/store.o $(STORE_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
+$(BUILD)/tools/%: tools/%.c $(APP_HDR) $(APP_LIBS)
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) -Isrc/hub -Itests $(ALL_CFLAGS) -o $@ $< $(HUB_LIB) $(LIB)
+	$(CC) $(CPPFLAGS) $(APP_INC) $(ALL_CFLAGS) -o $@ $< $(APP_LIBS)
+
+$(BUILD)/tests/%: tests/%.c tests/check.h $(APP_HDR) $(APP_LIBS)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(APP_INC) -Itests $(ALL_CFLAGS) -o $@ $< $(APP_LIBS)
 
 run-tests: $(TESTS) $(BINS)
 	@set -e; for t in $(TESTS); do echo "== $$t"; $$t; done
 	@echo "== tests/hub_e2e.sh"; sh tests/hub_e2e.sh $(BUILD)
+	@echo "== tests/store_e2e.sh"; sh tests/store_e2e.sh $(BUILD)
 	@echo "all tests passed ($(BUILD))"
 
 test: check-boundary run-tests

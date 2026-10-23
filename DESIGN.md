@@ -141,7 +141,7 @@ Limits:
 
 | Item | Design |
 |---|---|
-| What | every sensor message, every state change, and a `GAP` record (with the dropped count) whenever `store` starts |
+| What | every sensor message, every state change, a `GAP` record that `store` writes at every start (with the bytes recovery truncated), and a `GAP` message from `fuse-hub` (with its dropped count) when it reconnects after dropping records |
 | Rate | ~1.3 KB/s (1.1 KB/s of messages plus record headers): ~4.8 MB/h, ~230 MB per 48 h soak |
 | Format | append-only segments `/var/lib/dlby/log/seg-NNNNNN.log`. Each record has an 11-byte header, `len` u16, `type` u8, `seq` u32 (one counter for the whole log, continued across boots), `crc32` u32 over len + type + seq + payload, followed by the message exactly as received. Because messages are stored unchanged, the log is also the replay harness's input |
 | Retention | 8 MB segments (~1.7 h), 512 MB cap (~4.5 days of driving); the oldest segment is deleted first. If the card is still full, state changes only |
