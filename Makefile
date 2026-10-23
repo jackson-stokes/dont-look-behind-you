@@ -16,12 +16,17 @@ COMMON_SRC := $(wildcard src/common/*.c)
 COMMON_OBJ := $(COMMON_SRC:src/common/%.c=$(BUILD)/common/%.o)
 LIB        := $(BUILD)/libdlby_common.a
 
+HUB_HDR := $(wildcard src/hub/*.h)
+HUB_LIB := $(BUILD)/libdlby_hub.a
+
+BINS := $(BUILD)/fuse-hub $(BUILD)/tools/fake-sensors
+
 TEST_SRC := $(wildcard tests/test_*.c)
 TESTS    := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%)
 
 .PHONY: all test asan check-boundary run-tests clean
 
-all: $(LIB) $(TESTS)
+all: $(LIB) $(BINS) $(TESTS)
 
 $(BUILD)/common/%.o: src/common/%.c $(COMMON_HDR)
 	@mkdir -p $(@D)
@@ -30,12 +35,28 @@ $(BUILD)/common/%.o: src/common/%.c $(COMMON_HDR)
 $(LIB): $(COMMON_OBJ)
 	$(AR) rcs $@ $^
 
-$(BUILD)/tests/%: tests/%.c tests/check.h $(COMMON_HDR) $(LIB)
+$(BUILD)/hub/%.o: src/hub/%.c $(HUB_HDR) $(COMMON_HDR)
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) -Itests $(ALL_CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CPPFLAGS) -Isrc/hub $(ALL_CFLAGS) -c -o $@ $<
 
-run-tests: $(TESTS)
+# fuse-hub's testable parts (everything but main), linked into the unit tests.
+$(HUB_LIB): $(BUILD)/hub/health.o
+	$(AR) rcs $@ $^
+
+$(BUILD)/fuse-hub: $(BUILD)/hub/fuse-hub.o $(HUB_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
+$(BUILD)/tools/%: tools/%.c $(HUB_HDR) $(COMMON_HDR) $(LIB)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -Isrc/hub $(ALL_CFLAGS) -o $@ $< $(LIB)
+
+$(BUILD)/tests/%: tests/%.c tests/check.h $(HUB_HDR) $(COMMON_HDR) $(HUB_LIB) $(LIB)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -Isrc/hub -Itests $(ALL_CFLAGS) -o $@ $< $(HUB_LIB) $(LIB)
+
+run-tests: $(TESTS) $(BINS)
 	@set -e; for t in $(TESTS); do echo "== $$t"; $$t; done
+	@echo "== tests/hub_e2e.sh"; sh tests/hub_e2e.sh $(BUILD)
 	@echo "all tests passed ($(BUILD))"
 
 test: check-boundary run-tests
