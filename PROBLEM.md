@@ -19,7 +19,7 @@ The sensors must be physically mounted outside the car, aimed at the blind spot,
 Which two (or more), and how they COOPERATE (fused, correlated, or one pipeline) rather than merely coexist. 
 
 - HLK-LD2451 24GHz radar (UART, ~10Hz), facing rearward along the right side: range, speed, and approach direction at roughly 5-50m.
-- HC-SR04 ultrasonic (~20Hz; JSN-SR04T for the outdoor build), facing sideways: confirms something is in the 0.2-4m blind-spot zone.
+- HC-SR04 ultrasonic (~16Hz; JSN-SR04T for the outdoor build), facing sideways: confirms something is in the 0.2-4m blind-spot zone.
 
 They are fused by a state machine that hands off between the two range bands: CLEAR -> APPROACHING (radar sees an approaching target) -> IN_ZONE (ultrasonic detects something consistent with the radar's last track) -> CLEAR. With both healthy, radar alone can warn (APPROACHING) but IN_ZONE needs ultrasonic confirmation; if one is lost, the survivor warns in a degraded pattern.
 

@@ -12,13 +12,13 @@ Storage is deliberately off the alert path, so a slow SD write can never delay a
 
 | Process | Owner | Role | Scheduling |
 |---|---|---|---|
-| `dlby-super` | shared | starts, watches, restarts children | FIFO 90, mostly asleep |
+| `dlby-super` | Jackson | starts, watches, restarts children | FIFO 90, mostly asleep |
 | `cap-radar` | Gage | reads and parses radar frames | FIFO 60 |
 | `cap-sonar` | Gage | 60 ms trigger, kernel-stamped echo edges | FIFO 60 |
 | `fuse-hub` | Jackson | fusion state machine; own staleness timeout per sensor (radar 1 s, ultrasonic 8 pings, or EOF) | FIFO 70 |
-| `alert` | shared | LED and buzzer patterns | FIFO 80 |
+| `alert` | Jackson | LED and buzzer patterns | FIFO 80 |
 | `store` | Jackson | power-cut-safe append log | OTHER, nice +5 |
-| `status-lcd` | shared | bench LCD, kept apart from `alert` | OTHER |
+| `status-lcd` | Jackson | bench LCD, kept apart from `alert` | OTHER |
 
 **IPC.** Every link is a Unix domain socket (UDS), `SOCK_SEQPACKET`. Receivers listen on
 `/run/dlby/<name>.sock`. Senders reconnect with backoff (50 ms to 1 s) on EOF, `EPIPE`, or
@@ -29,7 +29,7 @@ seqpacket because it keeps message boundaries and reports a dead peer at once as
 **Rates.** The diagram gives the payload and rate on every link. The busiest is
 `fuse-hub` → `store` at ~1.1 KB/s (~4 MB/h, ~190 MB per 48 h soak). The radar UART carries
 ≤1.3 KB/s of its 11.5 KB/s capacity. To confirm on hardware: the ultrasonic rate is
-16 Hz, not HARDWARE.md's "~20 Hz", because the HC-SR04 needs ≥60 ms between pings. The
+16 Hz, because the HC-SR04 needs ≥60 ms between pings. The
 radar message size (~64 B) is an estimate until the LD2451 frame format is checked.
 
 ### Fusion states and driver signals
@@ -80,8 +80,13 @@ Losing range data would take >250 ms of starvation to overflow the 16-event edge
 (`sched_rt_runtime_us` = 950 ms/s) stays on, so a spinning child can't starve the system,
 and `dlby-super` at priority 90 can still kill it.
 
-### D: crash-consistent storage
-TODO
+### D: crash-consistent storage (`store`)
+**Reason:** the ignition cuts power with no warning, many times a day, and this log is our
+evidence for the evaluation (§6) and the 48 h soak. If a power cut could leave it garbled,
+no result would be provable. So every record must be either complete and checkable, or
+detectably incomplete and removed. `store` does this with append-only segments, a CRC on
+every record, timed `fdatasync`, and truncation on boot (§4). It runs off the alert path,
+so none of this can delay a warning.
 
 ### E: multi-process architecture with a supervisor
 **Reason:** an outdoor sensor pod will fail in ordinary use (loose cable, water, a
@@ -133,11 +138,27 @@ Limits:
 - Single-sensor warnings add false alarms (parked cars, poles) to avoid going silent.
 
 ## 4. Storage and data
-TODO
+
+| Item | Design |
+|---|---|
+| What | every sensor message, every state change, and a `GAP` record (with the dropped count) whenever `store` starts |
+| Rate | ~1.3 KB/s (1.1 KB/s of messages plus record headers): ~4.8 MB/h, ~230 MB per 48 h soak |
+| Format | append-only segments `/var/lib/dlby/log/seg-NNNNNN.log`. Each record has an 11-byte header, `len` u16, `type` u8, `seq` u32 (one counter for the whole log, continued across boots), `crc32` u32 over len + type + seq + payload, followed by the message exactly as received. Because messages are stored unchanged, the log is also the replay harness's input |
+| Retention | 8 MB segments (~1.7 h), 512 MB cap (~4.5 days of driving); the oldest segment is deleted first. If the card is still full, state changes only |
+| Durability | each record is a direct `write()`; `fdatasync` every 1 s and after each state change; `fsync` the directory after creating a segment |
+| Power cut mid-write | loses ≤ ~1 s of samples, never a synced state change. On boot, truncate after the last record whose length and CRC check out; start a new segment with a `GAP` record |
+
+ext4's journal keeps the file system consistent; the CRCs make our records trustworthy.
 
 ## 5. Constraints and substitutions
-TODO. Known so far: stock Pi OS is not a PREEMPT_RT kernel, so SCHED_FIFO bounds
-scheduling delay but not delay from non-preemptible kernel sections.
+| Ideal | Actual | Cost |
+|---|---|---|
+| JSN-SR04T | HC-SR04 | not waterproof: bench only |
+| radar proven on cyclists | LD2451, rated for cars | range unproven until ≥ 20 m test |
+| PREEMPT_RT | stock Pi OS | non-preemptible kernel sections unbounded |
+| car in traffic | empty lot, slow passes | low-speed claims only |
+| live sensors | replay (Jackson is remote) | tests logic, not sensing |
+| FIFO for range | FIFO for latency | claim narrowed (§2 C) |
 
 ## 6. Evaluation plan
 
@@ -156,5 +177,35 @@ load; mean and std should not change.
 Sensor periods (60 ms, 100 ms) dominate end-to-end detection time and are reported
 separately; C controls only the part scheduling adds.
 
+### Domain, mechanism and soak tests
+| Measurement | Method | Target |
+|---|---|---|
+| Radar range, cyclist | 5+ passes, hand-logged | ≥ 20 m (go/no-go) |
+| Detection | ≥ 30 hand-logged passes | ≥ 90 % found; ≤ 1 false / 10 min |
+| E restart | kill each child | ≤ 1 s to first message |
+| D power cut | 50 cuts mid-write | 0 bad records kept; loss ≤ 1 s; `last_seq` = last kept, next = +1 |
+| Fault injection | each §3 row once | matching §3 log line |
+| 48 h soak | hourly CPU, RSS | no unexplained restarts; RSS +< 1 MB/process; CPU < 10 % |
+
 ## 7. Ownership map
-TODO
+| Owner | Owns |
+|---|---|
+| Jackson | `fuse-hub`, `store`, `dlby-super`, `alert`, `status-lcd`, replay harness, evaluation analysis, PROBLEM.md, DESIGN.md |
+| Gage | `cap-radar`, `cap-sonar`, wiring and sensor pod, bench sketch, hardware tests, data capture |
+| Shared | 48 h soak, demo, evaluation report |
+
+## 8. AI-use plan
+**We use AI for** planning and design review, explaining OS concepts, drafting code, test and
+replay-data tools, and reviewing each other's PRs. **We don't use it for** anything at
+runtime, accepting code we can't explain, weakening or deleting tests to make them pass, or
+proposing hardware fixes without evidence (dmesg, timing captures, `/proc/interrupts`).
+
+**Keeping the boundary visible:**
+- Product code lives only in `src/`. Python and other tools live in `tools/` and are never
+  deployed.
+- `make check-boundary`, run by `make test`, fails if `src/` contains `AF_INET`/`AF_INET6`
+  sockets, a `connect()` to anything but `AF_UNIX`, `getaddrinfo`, or an HTTP/curl library.
+  It's a text check, so it can miss things; the next bullet is the real enforcement.
+- The systemd unit sets `RestrictAddressFamilies=AF_UNIX` and `IPAddressDeny=any`, so the
+  kernel blocks any network use at runtime, even if the code tried.
+- AI session transcripts are committed to `docs/transcripts/` at the end of each milestone.
