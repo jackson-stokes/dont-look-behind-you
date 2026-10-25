@@ -1,12 +1,13 @@
-/* store (M3 step 3): power-cut-safe append log of everything fuse-hub forwards
- * (DESIGN.md §2 D, §4). Off the alert path: runs SCHED_OTHER.
+/* store (M3 steps 3-4): power-cut-safe append log of everything fuse-hub
+ * forwards (DESIGN.md §2 D, §4). Off the alert path: runs SCHED_OTHER, with
+ * nice +5 set by dlby-super. Heartbeats to dlby-super from the main loop
+ * (hb.h); standalone when not supervised.
  *
- * Not yet: the heartbeat to dlby-super (it goes in the main loop below) and
- * nice +5, both with the super step.
- *
- * Exit codes: 0 on SIGTERM/SIGINT, 69 if the log dir or socket can't be set up,
- * 70 on any other unexpected failure (restart runs recovery).
+ * Exit codes: 0 on SIGTERM/SIGINT or when dlby-super is gone, 69 if the log dir
+ * or socket can't be set up, 70 on any other unexpected failure (restart runs
+ * recovery).
  */
+#include "hb.h"
 #include "ipc.h"
 #include "log.h"
 #include "msg.h"
@@ -125,10 +126,14 @@ static int read_client(struct store *st, int i, int64_t now)
 	return 0;
 }
 
-/* Idle at most until the next timed sync is due, never more than MAX_IDLE_MS. */
-static int poll_timeout_ms(const struct seglog *sl, int64_t now)
+/* Idle at most until the next timed sync or heartbeat is due, never more than
+ * MAX_IDLE_MS. */
+static int poll_timeout_ms(const struct seglog *sl, const struct hb *hb, int64_t now)
 {
 	int64_t due = seglog_sync_due_ns(sl), ms;
+
+	if (hb_due_ns(hb) < due)
+		due = hb_due_ns(hb);
 
 	if (due == INT64_MAX)
 		return MAX_IDLE_MS;
@@ -139,9 +144,10 @@ static int poll_timeout_ms(const struct seglog *sl, int64_t now)
 int main(void)
 {
 	struct store st;
+	struct hb hb;
 	struct seglog_cfg cfg;
-	struct pollfd pfd[2 + MAX_CLIENTS];
-	int slot[2 + MAX_CLIENTS];
+	struct pollfd pfd[3 + MAX_CLIENTS];
+	int slot[3 + MAX_CLIENTS];
 	struct signalfd_siginfo si;
 	bool sl_open = false;
 	int64_t now;
@@ -154,6 +160,10 @@ int main(void)
 	for (i = 0; i < MAX_CLIENTS; i++)
 		st.cl[i] = -1;
 
+	if (hb_init(&hb) < 0) {
+		log_msg(LOG_E, "hb_init_failed err=%s", strerror(errno));
+		goto out;
+	}
 	sfd = signal_fd();
 	if (sfd < 0) {
 		log_msg(LOG_E, "signalfd_failed err=%s", strerror(errno));
@@ -183,7 +193,8 @@ int main(void)
 	for (;;) {
 		pfd[0] = (struct pollfd){ .fd = sfd, .events = POLLIN };
 		pfd[1] = (struct pollfd){ .fd = lfd, .events = POLLIN };
-		nfds = 2;
+		pfd[2] = (struct pollfd){ .fd = hb.fd, .events = POLLIN };	/* -1: ignored */
+		nfds = 3;
 		for (i = 0; i < MAX_CLIENTS; i++) {
 			if (st.cl[i] >= 0) {
 				slot[nfds] = i;
@@ -191,7 +202,7 @@ int main(void)
 			}
 		}
 
-		n = poll(pfd, (nfds_t)nfds, poll_timeout_ms(&st.sl, now));
+		n = poll(pfd, (nfds_t)nfds, poll_timeout_ms(&st.sl, &hb, now));
 		if (n < 0 && errno != EINTR) {
 			log_msg(LOG_E, "poll_failed err=%s", strerror(errno));
 			goto out;
@@ -217,16 +228,21 @@ int main(void)
 			}
 			if ((pfd[1].revents & POLLIN) && accept_client(&st, lfd, now) < 0)
 				goto out;
-			for (i = 2; i < nfds; i++)
+			for (i = 3; i < nfds; i++)
 				if (pfd[i].revents && read_client(&st, slot[i], now) < 0)
 					goto out;
 		}
 
 		/* Every pass, not just on timeout: a steady stream never lets poll
 		 * time out, and samples must still reach disk within ~1 s. */
-		/* TODO(super step): heartbeat to dlby-super here, from this loop. */
 		if (seglog_maybe_sync(&st.sl, now) < 0) {
 			log_msg(LOG_E, "sync_failed err=%s", strerror(errno));
+			goto out;
+		}
+		/* From this loop, never a side thread: a stuck loop goes quiet. */
+		if ((pfd[2].revents && hb_readable(&hb) < 0) || hb_tick(&hb, now) < 0) {
+			log_msg(LOG_W, "super_lost err=%s", strerror(errno));
+			rc = EX_OK;
 			goto out;
 		}
 	}

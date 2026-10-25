@@ -1,13 +1,15 @@
-/* fuse-hub, minimal (M3 steps 2-3): receives cap-radar/cap-sonar messages,
+/* fuse-hub, minimal (M3 steps 2-4): receives cap-radar/cap-sonar messages,
  * validates them, tracks per-sensor health (DESIGN.md §1, §3) and forwards a
- * copy of every message, plus each state change, to store.
+ * copy of every message, plus each state change, to store. Heartbeats to
+ * dlby-super from the main loop (hb.h); standalone when not supervised.
  *
- * Not yet: APPROACHING/IN_ZONE fusion, forwarding to alert, the heartbeat to
- * dlby-super (it goes in the main loop below), SCHED_FIFO 70 and mlockall.
+ * Not yet: APPROACHING/IN_ZONE fusion, forwarding to alert, SCHED_FIFO 70 and
+ * mlockall.
  *
- * Exit codes: 0 on SIGTERM/SIGINT, 69 if the socket can't be set up, 70 on any
- * other unexpected failure.
+ * Exit codes: 0 on SIGTERM/SIGINT or when dlby-super is gone, 69 if the socket
+ * can't be set up, 70 on any other unexpected failure.
  */
+#include "hb.h"
 #include "health.h"
 #include "ipc.h"
 #include "log.h"
@@ -226,8 +228,9 @@ static int signal_fd(void)
 int main(void)
 {
 	struct hub hub;
-	struct pollfd pfd[2 + MAX_CLIENTS];
-	int slot[2 + MAX_CLIENTS];
+	struct hb hb;
+	struct pollfd pfd[3 + MAX_CLIENTS];
+	int slot[3 + MAX_CLIENTS];
 	struct signalfd_siginfo si;
 	char path[IPC_PATH_MAX];
 	int64_t now, next_stats;
@@ -237,12 +240,17 @@ int main(void)
 
 	log_init("fuse-hub");
 	memset(&hub, 0, sizeof(hub));
+	hub.store.fd = -1;	/* an early goto out must not close fd 0 */
 	health_init(&hub.h);
 	for (i = 0; i < MAX_CLIENTS; i++) {
 		hub.cl[i].fd = -1;
 		hub.cl[i].sensor = -1;
 	}
 
+	if (hb_init(&hb) < 0) {
+		log_msg(LOG_E, "hb_init_failed err=%s", strerror(errno));
+		goto out;
+	}
 	sfd = signal_fd();
 	if (sfd < 0) {
 		log_msg(LOG_E, "signalfd_failed err=%s", strerror(errno));
@@ -276,7 +284,8 @@ int main(void)
 	for (;;) {
 		pfd[0] = (struct pollfd){ .fd = sfd, .events = POLLIN };
 		pfd[1] = (struct pollfd){ .fd = lfd, .events = POLLIN };
-		nfds = 2;
+		pfd[2] = (struct pollfd){ .fd = hb.fd, .events = POLLIN };	/* -1: ignored */
+		nfds = 3;
 		for (i = 0; i < MAX_CLIENTS; i++) {
 			if (hub.cl[i].fd >= 0) {
 				slot[nfds] = i;
@@ -310,13 +319,18 @@ int main(void)
 		}
 		if ((pfd[1].revents & POLLIN) && accept_client(&hub, lfd, now) < 0)
 			goto out;
-		for (i = 2; i < nfds; i++)
+		for (i = 3; i < nfds; i++)
 			if (pfd[i].revents)
 				read_client(&hub, slot[i], now);
 
 		report_lost(&hub, health_tick(&hub.h, now), "stale", now);
 
-		/* TODO(super step): heartbeat to dlby-super here, from this loop. */
+		/* From this loop, never a side thread: a stuck loop goes quiet. */
+		if ((pfd[2].revents && hb_readable(&hb) < 0) || hb_tick(&hb, now) < 0) {
+			log_msg(LOG_W, "super_lost err=%s", strerror(errno));
+			rc = EX_OK;
+			goto out;
+		}
 		if (now >= next_stats) {
 			log_msg(LOG_I, "stats radar=%" PRIu64 " sonar=%" PRIu64 " rejected=%" PRIu64,
 				hub.rx[SENSOR_RADAR], hub.rx[SENSOR_SONAR], hub.rejected);
