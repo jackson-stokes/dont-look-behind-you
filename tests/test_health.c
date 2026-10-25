@@ -44,12 +44,38 @@ static void test_radar_loss_boundary(void)
 {
 	struct health h;
 
-	CHECK(RADAR_LOSS_NS == 1000 * MS);
+	CHECK(RADAR_LOSS_NS == 3000 * MS);
 	health_init(&h);
 	health_rx(&h, SENSOR_RADAR, 0);
 	CHECK(health_tick(&h, RADAR_LOSS_NS) == 0);
 	CHECK(health_tick(&h, RADAR_LOSS_NS + 1) == (1u << SENSOR_RADAR));
 	CHECK(health_state(&h) == H_BLIND);
+}
+
+/* Bench: one empty frame every ~1394 ms with no targets (docs/evidence/sensor-check.txt). */
+static void test_empty_frame_rate_keeps_radar_up(void)
+{
+	const int64_t frame = 1394 * MS;
+	struct health h;
+	int64_t t, t_frame, prev = 0;
+	int k;
+
+	health_init(&h);
+	for (k = 0; k <= 21; k++) {
+		if (k == 20)
+			continue;		/* one missed frame: a 2788 ms gap */
+		t_frame = k * frame;
+		for (t = prev + 50 * MS; t < t_frame; t += 50 * MS)
+			CHECK(health_tick(&h, t) == 0);
+		CHECK(health_rx(&h, SENSOR_RADAR, t_frame) == (k == 0));
+		CHECK(health_tick(&h, t_frame) == 0);
+		prev = t_frame;
+	}
+	CHECK(h.up[SENSOR_RADAR]);
+
+	/* frames stop: lost exactly one timeout after the last */
+	CHECK(health_tick(&h, prev + RADAR_LOSS_NS) == 0);
+	CHECK(health_tick(&h, prev + RADAR_LOSS_NS + 1) == (1u << SENSOR_RADAR));
 }
 
 static void test_eof_loses_at_once(void)
@@ -99,6 +125,7 @@ int main(void)
 	RUN(test_both_up_is_ok);
 	RUN(test_sonar_loss_boundary);
 	RUN(test_radar_loss_boundary);
+	RUN(test_empty_frame_rate_keeps_radar_up);
 	RUN(test_eof_loses_at_once);
 	RUN(test_both_stale_together);
 	RUN(test_recovery);

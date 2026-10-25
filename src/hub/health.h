@@ -10,7 +10,9 @@
 
 #define RADAR_PERIOD_NS 100000000LL		/* 10 Hz */
 #define SONAR_PERIOD_NS  60000000LL		/* HC-SR04 needs >= 60 ms per ping */
-#define RADAR_LOSS_NS   1000000000LL		/* no valid frame for 1 s */
+/* No valid frame for 3 s. With no targets the LD2451 sends one empty frame every
+ * ~1.4 s (docs/evidence/sensor-check.txt); 3 s covers that plus one missed frame. */
+#define RADAR_LOSS_NS   3000000000LL
 #define SONAR_LOSS_NS   (8 * SONAR_PERIOD_NS)	/* 8 pings = 480 ms */
 
 enum sensor {
