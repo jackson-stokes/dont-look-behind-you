@@ -1,0 +1,10 @@
+fuse-hub[7] I start sock=/tmp/r/fuse-hub.sock
+fuse-hub[7] I sensor_up name=radar
+fuse-hub[7] I sensor_up name=sonar
+fuse-hub[7] I healthy
+fuse-hub[7] W degraded lost=sonar reason=stale
+fake-sonar[10] I done sent=17 dropped=0
+fake-radar[9] I done sent=30 dropped=0
+fuse-hub[7] E blind lost=radar,sonar reason=eof
+fuse-hub[7] I exit code=0 radar=30 sonar=17 rejected=0
+hub rc=0

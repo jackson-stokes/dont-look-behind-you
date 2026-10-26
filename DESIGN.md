@@ -15,7 +15,7 @@ Storage is deliberately off the alert path, so a slow SD write can never delay a
 | `dlby-super` | Jackson | starts, watches, restarts children | FIFO 90, mostly asleep |
 | `cap-radar` | Gage | reads and parses radar frames | FIFO 60 |
 | `cap-sonar` | Gage | 60 ms trigger, kernel-stamped echo edges | FIFO 60 |
-| `fuse-hub` | Jackson | fusion state machine; own staleness timeout per sensor (radar 1 s, ultrasonic 8 pings, or EOF) | FIFO 70 |
+| `fuse-hub` | Jackson | fusion state machine; own staleness timeout per sensor (radar 3 s, ultrasonic 8 pings, or EOF) | FIFO 70 |
 | `alert` | Jackson | LED and buzzer patterns | FIFO 80 |
 | `store` | Jackson | power-cut-safe append log | OTHER, nice +5 |
 | `status-lcd` | Jackson | bench LCD, kept apart from `alert` | OTHER |
@@ -31,13 +31,16 @@ seqpacket because it keeps message boundaries and reports a dead peer at once as
 ≤1.3 KB/s of its 11.5 KB/s capacity. To confirm on hardware: the ultrasonic rate is
 16 Hz, because the HC-SR04 needs ≥60 ms between pings. The
 radar message size (~64 B) is an estimate until the LD2451 frame format is checked.
+Observed on the bench: with no targets the radar sends one empty frame every ~1.4 s, not
+10 Hz ([docs/evidence/sensor-check.txt](docs/evidence/sensor-check.txt)); 10 Hz is assumed
+only while it sees targets, unverified.
 
 ### Fusion states and driver signals
 While both sensors are healthy, the radar alone raises the early APPROACHING warning (solid
 LED) but IN_ZONE (buzzer) needs the ultrasonic to confirm the radar's track; if one is lost,
 the survivor still warns in the degraded pattern. `fuse-hub` starts in BLIND, then moves
 to the normal states once both sensors report, or to the matching DEG state if one reports
-and the other stays silent past its loss timeout (radar 1 s, ultrasonic 8 pings).
+and the other stays silent past its loss timeout (radar 3 s, ultrasonic 8 pings).
 
 An ultrasonic ping with no echo inside 4.3 m means "nothing in zone", and IN_ZONE needs
 2 of the last 3 pings, so a single dropout doesn't flicker the alert. The buzzer has a
@@ -118,7 +121,7 @@ per 10 s with a `count=` field.
 
 | Component | Failure | Detection | Response | Log line |
 |---|---|---|---|---|
-| radar | dead or unplugged | no valid frame 1 s | DEG; ultrasonic alone | `fuse-hub[415] W degraded lost=radar` |
+| radar | dead or unplugged | no valid frame 3 s | DEG; ultrasonic alone | `fuse-hub[415] W degraded lost=radar` |
 | ultrasonic | dead, unplugged, echo stuck high | no echo edge for 8 pings, or high > 60 ms | DEG; radar alone. Stuck-high needs power cycle | `cap-sonar[413] W sonar_lost reason=no_echo` |
 | both sensors | lost together | both of the above | BLIND | `fuse-hub[415] E blind lost=radar,sonar` |
 | `cap-*` process | crash or hang | hub staleness/EOF; super SIGCHLD/heartbeat | hub → DEG at once; super restarts; reconnect restores | `fuse-hub[415] W degraded lost=radar reason=stale` |
@@ -141,7 +144,7 @@ Limits:
 
 | Item | Design |
 |---|---|
-| What | every sensor message, every state change, and a `GAP` record (with the dropped count) whenever `store` starts |
+| What | every sensor message, every state change, a `GAP` record that `store` writes at every start (with the bytes recovery truncated), and a `GAP` message from `fuse-hub` (with its dropped count) when it reconnects after dropping records |
 | Rate | ~1.3 KB/s (1.1 KB/s of messages plus record headers): ~4.8 MB/h, ~230 MB per 48 h soak |
 | Format | append-only segments `/var/lib/dlby/log/seg-NNNNNN.log`. Each record has an 11-byte header, `len` u16, `type` u8, `seq` u32 (one counter for the whole log, continued across boots), `crc32` u32 over len + type + seq + payload, followed by the message exactly as received. Because messages are stored unchanged, the log is also the replay harness's input |
 | Retention | 8 MB segments (~1.7 h), 512 MB cap (~4.5 days of driving); the oldest segment is deleted first. If the card is still full, state changes only |
@@ -159,6 +162,7 @@ ext4's journal keeps the file system consistent; the CRCs make our records trust
 | car in traffic | empty lot, slow passes | low-speed claims only |
 | live sensors | replay (Jackson is remote) | tests logic, not sensing |
 | FIFO for range | FIFO for latency | claim narrowed (§2 C) |
+| radar ~10 Hz | ~1.4 s per empty frame on bench | loss timeout raised to 3 s; a dead radar takes up to 3 s to show as DEG |
 
 ## 6. Evaluation plan
 

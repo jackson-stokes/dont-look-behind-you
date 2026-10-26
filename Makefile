@@ -16,12 +16,34 @@ COMMON_SRC := $(wildcard src/common/*.c)
 COMMON_OBJ := $(COMMON_SRC:src/common/%.c=$(BUILD)/common/%.o)
 LIB        := $(BUILD)/libdlby_common.a
 
+HUB_HDR := $(wildcard src/hub/*.h)
+HUB_LIB := $(BUILD)/libdlby_hub.a
+
+STORE_HDR := $(wildcard src/store/*.h)
+STORE_LIB := $(BUILD)/libdlby_store.a
+
+SUPER_HDR := $(wildcard src/super/*.h)
+SUPER_LIB := $(BUILD)/libdlby_super.a
+
+APP_HDR  := $(COMMON_HDR) $(HUB_HDR) $(STORE_HDR) $(SUPER_HDR)
+APP_INC  := -Isrc/hub -Isrc/store -Isrc/super
+APP_LIBS := $(HUB_LIB) $(STORE_LIB) $(SUPER_LIB) $(LIB)
+
+# Deployed to the Pi by `make install`.
+PRODUCT := $(BUILD)/dlby-super $(BUILD)/store $(BUILD)/fuse-hub
+
+BINS := $(PRODUCT) $(BUILD)/tools/fake-sensors $(BUILD)/tools/fake-child \
+	$(BUILD)/tools/dlby-logcat
+
 TEST_SRC := $(wildcard tests/test_*.c)
 TESTS    := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%)
 
-.PHONY: all test asan check-boundary run-tests clean
+PREFIX     ?= /opt/dlby
+REMOTE_DIR ?= dlby-src
 
-all: $(LIB) $(TESTS)
+.PHONY: all test asan check-boundary run-tests clean install deploy
+
+all: $(LIB) $(BINS) $(TESTS)
 
 $(BUILD)/common/%.o: src/common/%.c $(COMMON_HDR)
 	@mkdir -p $(@D)
@@ -30,12 +52,53 @@ $(BUILD)/common/%.o: src/common/%.c $(COMMON_HDR)
 $(LIB): $(COMMON_OBJ)
 	$(AR) rcs $@ $^
 
-$(BUILD)/tests/%: tests/%.c tests/check.h $(COMMON_HDR) $(LIB)
+$(BUILD)/hub/%.o: src/hub/%.c $(HUB_HDR) $(COMMON_HDR)
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) -Itests $(ALL_CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CPPFLAGS) -Isrc/hub $(ALL_CFLAGS) -c -o $@ $<
 
-run-tests: $(TESTS)
+# fuse-hub's testable parts (everything but main), linked into the unit tests.
+$(HUB_LIB): $(BUILD)/hub/health.o
+	$(AR) rcs $@ $^
+
+$(BUILD)/fuse-hub: $(BUILD)/hub/fuse-hub.o $(HUB_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
+# Objects under obj/store/: $(BUILD)/store is the binary.
+$(BUILD)/obj/store/%.o: src/store/%.c $(STORE_HDR) $(COMMON_HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -Isrc/store $(ALL_CFLAGS) -c -o $@ $<
+
+# store's testable parts (everything but main), linked into the tests and tools.
+$(STORE_LIB): $(BUILD)/obj/store/record.o $(BUILD)/obj/store/seglog.o
+	$(AR) rcs $@ $^
+
+$(BUILD)/store: $(BUILD)/obj/store/store.o $(STORE_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
+$(BUILD)/obj/super/%.o: src/super/%.c $(SUPER_HDR) $(COMMON_HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -Isrc/super $(ALL_CFLAGS) -c -o $@ $<
+
+# dlby-super's testable parts (everything but main), linked into the unit tests.
+$(SUPER_LIB): $(BUILD)/obj/super/supervise.o $(BUILD)/obj/super/notify.o
+	$(AR) rcs $@ $^
+
+$(BUILD)/dlby-super: $(BUILD)/obj/super/dlby-super.o $(SUPER_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
+$(BUILD)/tools/%: tools/%.c $(APP_HDR) $(APP_LIBS)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(APP_INC) $(ALL_CFLAGS) -o $@ $< $(APP_LIBS)
+
+$(BUILD)/tests/%: tests/%.c tests/check.h $(APP_HDR) $(APP_LIBS)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(APP_INC) -Itests $(ALL_CFLAGS) -o $@ $< $(APP_LIBS)
+
+run-tests: $(TESTS) $(BINS)
 	@set -e; for t in $(TESTS); do echo "== $$t"; $$t; done
+	@echo "== tests/hub_e2e.sh"; sh tests/hub_e2e.sh $(BUILD)
+	@echo "== tests/store_e2e.sh"; sh tests/store_e2e.sh $(BUILD)
+	@echo "== tests/super_e2e.sh"; sh tests/super_e2e.sh $(BUILD)
 	@echo "all tests passed ($(BUILD))"
 
 test: check-boundary run-tests
@@ -53,6 +116,25 @@ check-boundary:
 		fi; \
 	done
 	@echo "check-boundary: ok"
+
+install: $(PRODUCT)
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)/etc/systemd/system \
+		$(DESTDIR)/etc/systemd/system.conf.d $(DESTDIR)/etc/systemd/journald.conf.d
+	install -m 0755 $(PRODUCT) $(DESTDIR)$(PREFIX)/bin/
+	install -m 0644 deploy/dlby.service $(DESTDIR)/etc/systemd/system/dlby.service
+	install -m 0644 deploy/system.conf.d/dlby-watchdog.conf $(DESTDIR)/etc/systemd/system.conf.d/
+	install -m 0644 deploy/journald.conf.d/dlby.conf $(DESTDIR)/etc/systemd/journald.conf.d/
+
+# Builds natively on the Pi (no cross toolchain), installs, and restarts the
+# service. It changes a real device, so it is never run by the test targets.
+deploy:
+	@test -n "$(PI)" || { echo "usage: make deploy PI=pi@<host>"; exit 64; }
+	rsync -a --delete --exclude build --exclude .git --exclude .idea ./ $(PI):$(REMOTE_DIR)/
+	ssh $(PI) 'set -e; cd $(REMOTE_DIR); make; sudo make install; \
+		sudo systemd-analyze verify /etc/systemd/system/dlby.service; \
+		sudo systemctl daemon-reexec; sudo systemctl restart systemd-journald; \
+		sudo systemctl enable dlby; sudo systemctl restart dlby; \
+		systemctl --no-pager status dlby'
 
 clean:
 	rm -rf build

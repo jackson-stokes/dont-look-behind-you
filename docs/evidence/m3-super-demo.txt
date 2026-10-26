@@ -1,0 +1,46 @@
+super rc=0
+dlby-super[13] I start bin_dir=/tmp/demo/bin children=store,fuse-hub,alert,status-lcd,cap-radar,cap-sonar
+dlby-super[13] I child_start name=store pid=15
+dlby-super[13] I child_start name=fuse-hub pid=16
+dlby-super[13] I child_start name=alert pid=17
+dlby-super[13] I child_start name=status-lcd pid=18
+dlby-super[13] I child_start name=cap-radar pid=19
+dlby-super[13] I child_start name=cap-sonar pid=20
+fuse-hub[16] I start sock=/tmp/demo/run/fuse-hub.sock
+dlby-super[13] I first_heartbeat name=cap-radar ms=3
+dlby-super[13] I first_heartbeat name=alert ms=3
+status-lcd[18] I exiting code=78
+fuse-hub[16] I sensor_up name=sonar
+dlby-super[13] I first_heartbeat name=fuse-hub ms=3
+dlby-super[13] I first_heartbeat name=cap-sonar ms=3
+dlby-super[13] E child_exit name=status-lcd code=78
+dlby-super[13] E child_disabled name=status-lcd code=78
+store[15] I start dir=/tmp/demo/log segment=seg-000001.log next_seq=2
+dlby-super[13] I first_heartbeat name=store ms=4
+fuse-hub[16] I store_back dropped=3
+alert[17] I crashing signal=SEGV
+dlby-super[13] E child_exit name=alert signal=SEGV
+dlby-super[13] I child_restart name=alert in_ms=100
+dlby-super[13] I child_start name=alert pid=21
+dlby-super[13] I first_heartbeat name=alert ms=3
+dlby-super[13] E child_exit name=fuse-hub signal=SEGV
+dlby-super[13] I child_restart name=fuse-hub in_ms=100
+cap-sonar[20] W send_dropped err=Broken pipe count=1
+dlby-super[13] I child_start name=fuse-hub pid=26
+fuse-hub[26] I start sock=/tmp/demo/run/fuse-hub.sock
+fuse-hub[26] I sensor_up name=sonar
+dlby-super[13] I first_heartbeat name=fuse-hub ms=10
+dlby-super[13] I stop signal=TERM
+cap-sonar[20] I done sent=50 dropped=1
+cap-radar[19] I exit code=0
+alert[21] I exit code=0
+fuse-hub[26] I store_link forwarded=26 dropped=0
+fuse-hub[26] I exit code=0 radar=0 sonar=24 rejected=0
+dlby-super[13] I child_exit name=cap-radar code=0
+dlby-super[13] I child_exit name=cap-sonar code=0
+dlby-super[13] I child_exit name=alert code=0
+dlby-super[13] I child_exit name=fuse-hub code=0
+store[15] I exit code=0 records=53 syncs_timed=2 syncs_state=4
+dlby-super[13] I child_exit name=store code=0
+dlby-super[13] I exit code=0
+segments=1 records=53 radar=0 sonar=49 alert=2 gap_msg=1 gap_dropped=3 store_gap=1 other=0 bad=0 first_seq=1 last_seq=53 contiguous=1

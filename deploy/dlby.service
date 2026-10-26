@@ -1,0 +1,34 @@
+# Don't Look Behind You: dlby-super and everything it supervises (DESIGN.md §2 E, §3).
+# Installed by `make install` to /etc/systemd/system/dlby.service.
+[Unit]
+Description=Don't Look Behind You blind-spot warning (supervisor)
+After=local-fs.target
+
+[Service]
+# dlby-super sends READY=1 after starting its children and WATCHDOG=1 every 1 s
+# from its main loop; 3 s without one and systemd kills the whole cgroup and
+# restarts (§3 last row).
+Type=notify
+NotifyAccess=main
+WatchdogSec=3
+Restart=always
+RestartSec=1
+KillMode=control-group
+TimeoutStopSec=6
+
+ExecStart=/opt/dlby/bin/dlby-super
+Environment=DLBY_BIN_DIR=/opt/dlby/bin
+# TODO(alert step): ExecStopPost=/opt/dlby/bin/dlby-super --outputs-off
+
+# /run/dlby (sockets) and /var/lib/dlby (the store log).
+RuntimeDirectory=dlby
+RuntimeDirectoryMode=0700
+StateDirectory=dlby
+StateDirectoryMode=0700
+
+# The product makes no network calls (DESIGN.md §8): the kernel enforces it.
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

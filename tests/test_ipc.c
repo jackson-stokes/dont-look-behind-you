@@ -294,7 +294,7 @@ static void test_recv_rejects_truncated(void)
 
 static void test_check_msg_length_vs_type(void)
 {
-	static const uint8_t types[] = { MSG_RADAR, MSG_SONAR, MSG_ALERT, MSG_HB };
+	static const uint8_t types[] = { MSG_RADAR, MSG_SONAR, MSG_ALERT, MSG_HB, MSG_GAP };
 	uint8_t b[MSG_MAX];
 	uint64_t rej = 0;
 	size_t i;
@@ -318,6 +318,7 @@ static void test_check_msg_length_vs_type(void)
 	}
 	CHECK(msg_size(MSG_RADAR) == 64 && msg_size(MSG_SONAR) == 24);
 	CHECK(msg_size(MSG_ALERT) == 16 && msg_size(MSG_HB) == 8);
+	CHECK(msg_size(MSG_GAP) == 24);
 	CHECK(rej == 4);
 }
 
