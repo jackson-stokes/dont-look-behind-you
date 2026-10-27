@@ -25,15 +25,19 @@ STORE_LIB := $(BUILD)/libdlby_store.a
 SUPER_HDR := $(wildcard src/super/*.h)
 SUPER_LIB := $(BUILD)/libdlby_super.a
 
-APP_HDR  := $(COMMON_HDR) $(HUB_HDR) $(STORE_HDR) $(SUPER_HDR)
-APP_INC  := -Isrc/hub -Isrc/store -Isrc/super
-APP_LIBS := $(HUB_LIB) $(STORE_LIB) $(SUPER_LIB) $(LIB)
+CAP_HDR := $(wildcard src/capture/*.h)
+CAP_LIB := $(BUILD)/libdlby_capture.a
+
+APP_HDR  := $(COMMON_HDR) $(HUB_HDR) $(STORE_HDR) $(SUPER_HDR) $(CAP_HDR)
+APP_INC  := -Isrc/hub -Isrc/store -Isrc/super -Isrc/capture
+APP_LIBS := $(HUB_LIB) $(STORE_LIB) $(SUPER_LIB) $(CAP_LIB) $(LIB)
 
 # Deployed to the Pi by `make install`.
-PRODUCT := $(BUILD)/dlby-super $(BUILD)/store $(BUILD)/fuse-hub
+PRODUCT := $(BUILD)/dlby-super $(BUILD)/store $(BUILD)/fuse-hub $(BUILD)/cap-radar \
+	$(BUILD)/cap-sonar
 
 BINS := $(PRODUCT) $(BUILD)/tools/fake-sensors $(BUILD)/tools/fake-child \
-	$(BUILD)/tools/dlby-logcat
+	$(BUILD)/tools/dlby-logcat $(BUILD)/tools/fake-ld2451
 
 TEST_SRC := $(wildcard tests/test_*.c)
 TESTS    := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%)
@@ -86,6 +90,21 @@ $(SUPER_LIB): $(BUILD)/obj/super/supervise.o $(BUILD)/obj/super/notify.o
 $(BUILD)/dlby-super: $(BUILD)/obj/super/dlby-super.o $(SUPER_LIB) $(LIB)
 	$(CC) $(ALL_CFLAGS) -o $@ $^
 
+# cap-* include health.h for the shared sensor timing constants.
+$(BUILD)/obj/capture/%.o: src/capture/%.c $(CAP_HDR) $(HUB_HDR) $(COMMON_HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -Isrc/capture -Isrc/hub $(ALL_CFLAGS) -c -o $@ $<
+
+# The capture processes' testable parts (everything but main), linked into the unit tests.
+$(CAP_LIB): $(BUILD)/obj/capture/radar_parse.o $(BUILD)/obj/capture/echo.o
+	$(AR) rcs $@ $^
+
+$(BUILD)/cap-radar: $(BUILD)/obj/capture/cap-radar.o $(CAP_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
+$(BUILD)/cap-sonar: $(BUILD)/obj/capture/cap-sonar.o $(CAP_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
 $(BUILD)/tools/%: tools/%.c $(APP_HDR) $(APP_LIBS)
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(APP_INC) $(ALL_CFLAGS) -o $@ $< $(APP_LIBS)
@@ -99,6 +118,7 @@ run-tests: $(TESTS) $(BINS)
 	@echo "== tests/hub_e2e.sh"; sh tests/hub_e2e.sh $(BUILD)
 	@echo "== tests/store_e2e.sh"; sh tests/store_e2e.sh $(BUILD)
 	@echo "== tests/super_e2e.sh"; sh tests/super_e2e.sh $(BUILD)
+	@echo "== tests/capture_e2e.sh"; sh tests/capture_e2e.sh $(BUILD)
 	@echo "all tests passed ($(BUILD))"
 
 test: check-boundary run-tests

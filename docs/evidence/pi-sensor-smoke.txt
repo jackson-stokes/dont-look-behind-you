@@ -1,0 +1,49 @@
+Pi 5 sensor smoke test -- 2026-10-26, Gage
+No dlby code involved: stock tools only (pinctrl, stty/od, libgpiod v2.2.1).
+
+Setup
+  Board:   Raspberry Pi 5 Model B Rev 1.1, kernel 6.18.39+rpt-rpi-2712
+  Config:  [all] dtoverlay=uart2-pi5, dtparam=i2c_arm=on in /boot/firmware/config.txt
+  Devices: /dev/ttyAMA2 (crw-rw---- root dialout), header = gpiochip0 [pinctrl-rp1]
+  Wiring (right pod, docs/HARDWARE.md pin map):
+    LD2451  VCC 5V (pin 2), GND (pin 6), TX -> GPIO5 (pin 29), RX <- GPIO4 (pin 7)
+    HC-SR04 VCC 5V, GND, TRIG <- GPIO23 (pin 16),
+            ECHO -> 10k -> tap -> 10k -> 10k -> GND, tap -> GPIO24 (pin 18)
+
+1. Pin functions after the overlay
+yeahbrah@hoopty:~ $ pinctrl get 4-5,23-24
+ 4: a2    pn | hi // GPIO4 = TXD2
+ 5: a2    pu | hi // GPIO5 = RXD2
+23: no    pd | -- // GPIO23 = none
+24: no    pd | -- // GPIO24 = none
+
+2. LD2451 raw UART at 115200
+yeahbrah@hoopty:~ $ stty -F /dev/ttyAMA2 115200 raw -echo
+timeout 6 od -An -tx1 -v /dev/ttyAMA2
+ f4 f3 f2 f1 00 00 f8 f7 f6 f5 f4 f3 f2 f1 00 00
+ f8 f7 f6 f5 f4 f3 f2 f1 00 00 f8 f7 f6 f5 f4 f3
+
+3. HC-SR04 echo edges, kernel-timestamped (one ping at a wall)
+yeahbrah@hoopty:~ $ gpiomon -c gpiochip0 -e both -n 2 24 &
+sleep 0.5
+gpioset -c gpiochip0 -t 20us,0 23=1
+wait
+[1] 1857
+517.111786550    rising    gpiochip0 24 "GPIO24"
+517.122034466    falling    gpiochip0 24 "GPIO24"
+[1]+  Done                    gpiomon -c gpiochip0 -e both -n 2 24
+
+Findings
+- UART2 overlay loaded: GPIO4/5 muxed to TXD2/RXD2 (alt a2).
+- Radar: well-formed empty frames (header F4 F3 F2 F1, len 0, tail F8 F7 F6 F5),
+  same as the ESP32 bench (sensor-check.txt). od prints only whole 16-byte rows,
+  so the last frame was cut off when timeout ended the read. No target frame
+  captured yet; the target layout is still unverified.
+- Sonar: echo width 517.122034466 - 517.111786550 = 10248 us -> 10248/58 = 176.7 cm,
+  matching the ESP32 bench wall reading (176-177 cm). Divider, TRIG and ECHO work.
+- Both echo edges carry kernel timestamps on CLOCK_MONOTONIC (seconds since boot),
+  the same clock as origin_ns in msg.h -- first Pi evidence for DESIGN.md §2.
+
+Note for sensor-check.txt: its "RADAR no data" lines are an artifact of the bench
+sketch (loop() takes millis() before radar_poll(), so now - last_* underflows),
+not a radar fault. The sketch fix is pending.
