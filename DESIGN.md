@@ -6,16 +6,17 @@ Hardware and pin map: [docs/HARDWARE.md](docs/HARDWARE.md). Problem statement: [
 
 ![Architecture: processes, kernel components, hardware, and the rate on every link](docs/architecture.svg)
 
-Seven processes on the Pi 5, all started and watched by `dlby-super`. Sensor data goes
+Eight processes on the Pi 5, all started and watched by `dlby-super`. Sensor data goes
 straight to `fuse-hub`, which decides the alert state and forwards a copy to `store`.
 Storage is deliberately off the alert path, so a slow SD write can never delay an alert.
 
 | Process | Owner | Role | Scheduling |
 |---|---|---|---|
 | `dlby-super` | Jackson | starts, watches, restarts children | FIFO 90, mostly asleep |
-| `cap-radar` | Gage | reads and parses radar frames | FIFO 60 |
+| `cap-radar` | Gage | reads and parses radar frames (right radar, UART2) | FIFO 60 |
+| `cap-radar-left` | Gage | the same binary for the left radar (UART4); radar only, no ultrasonic on the left | FIFO 60 |
 | `cap-sonar` | Gage | 60 ms trigger, kernel-stamped echo edges | FIFO 60 |
-| `fuse-hub` | Jackson | fusion state machine; own staleness timeout per sensor (radar 3 s, ultrasonic 8 pings, or EOF) | FIFO 70 |
+| `fuse-hub` | Jackson | fusion state machine; own staleness timeout per sensor (each radar 3 s, ultrasonic 8 pings, or EOF) | FIFO 70 |
 | `alert` | Jackson | LED and buzzer patterns | FIFO 80 |
 | `store` | Jackson | power-cut-safe append log | OTHER, nice +5 |
 | `status-lcd` | Jackson | bench LCD, kept apart from `alert` | OTHER |
@@ -122,8 +123,9 @@ per 10 s with a `count=` field.
 | Component | Failure | Detection | Response | Log line |
 |---|---|---|---|---|
 | radar | dead or unplugged | no valid frame 3 s | DEG; ultrasonic alone | `fuse-hub[415] W degraded lost=radar` |
+| left radar | dead or unplugged | no valid frame 3 s | DEG; left side unwatched, right side unaffected | `fuse-hub[415] W degraded lost=radar_left` |
 | ultrasonic | dead, unplugged, echo stuck high | no echo edge for 8 pings, or high > 60 ms | DEG; radar alone. Stuck-high needs power cycle | `cap-sonar[413] W sonar_lost reason=no_echo` |
-| both sensors | lost together | both of the above | BLIND | `fuse-hub[415] E blind lost=radar,sonar` |
+| all sensors | lost together | all of the above | BLIND | `fuse-hub[415] E blind lost=radar,sonar,radar_left` |
 | `cap-*` process | crash or hang | hub staleness/EOF; super SIGCHLD/heartbeat | hub → DEG at once; super restarts; reconnect restores | `fuse-hub[415] W degraded lost=radar reason=stale` |
 | `fuse-hub` | crash | super SIGCHLD; `alert` silent 1 s | HUB_LOST; restart into BLIND; senders retry on `ECONNREFUSED`/`ENOENT` | `dlby-super[400] E child_exit name=fuse-hub signal=SEGV` |
 | `alert` | crash, outputs left on | super SIGCHLD | super forces GPIO 17/22 low, restarts | `dlby-super[400] I outputs_forced_off gpio=17,22` |
