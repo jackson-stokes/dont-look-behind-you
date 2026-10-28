@@ -1,80 +1,92 @@
-M3 demo run on the Pi -- 2026-10-27, Gage
-Real sensors (DEMO.md option A): ~/dlby-demo/bin links to the real cap-radar and
-cap-sonar, no fake-sensors. gagebranch @ 960114e. Video steps: start, data
-reaching store, kill -SEGV fuse-hub, kill -KILL cap-sonar, kill -TERM dlby-super.
-The radar-unplug fault is not in this take; see docs/evidence/m3-capture-pi.txt.
+M3 demo video run on the Pi -- 2026-10-27, Gage
+Real sensors (DEMO.md option A): two LD2451 radars (right on UART2 via cap-radar,
+left on UART4 via cap-radar-left, the same binary) and one HC-SR04 via cap-sonar.
+gagebranch @ 5f56d02. Video scenes: start; data reaching store; kill -SEGV
+fuse-hub; kill -KILL cap-sonar; right radar TX (pin 29) and left radar TX (pin 33)
+pulled and reconnected; kill -TERM dlby-super; final dlby-logcat.
 
-$ git log -1 --oneline; ls -l ~/dlby-demo/bin
-960114e (HEAD -> gagebranch, origin/gagebranch) M3: PROMPTLOG draft (Gage)
-total 0
-lrwxrwxrwx 1 yeahbrah yeahbrah 39 Oct 27 18:07 cap-radar -> /home/yeahbrah/dlby-src/build/cap-radar
-lrwxrwxrwx 1 yeahbrah yeahbrah 39 Oct 27 18:07 cap-sonar -> /home/yeahbrah/dlby-src/build/cap-sonar
-lrwxrwxrwx 1 yeahbrah yeahbrah 38 Oct 27 18:07 fuse-hub -> /home/yeahbrah/dlby-src/build/fuse-hub
-lrwxrwxrwx 1 yeahbrah yeahbrah 35 Oct 27 18:07 store -> /home/yeahbrah/dlby-src/build/store
-
-$ cat ~/dlby-demo/super.log
-dlby-super[4194] I start bin_dir=/home/yeahbrah/dlby-demo/bin children=store,fuse-hub,cap-radar,cap-sonar
-dlby-super[4194] I child_start name=store pid=4196
-dlby-super[4194] I child_start name=fuse-hub pid=4197
-dlby-super[4194] I child_start name=cap-radar pid=4198
-dlby-super[4194] I child_start name=cap-sonar pid=4199
-fuse-hub[4197] I start sock=/home/yeahbrah/dlby-demo/run/fuse-hub.sock
-cap-radar[4198] I start dev=/dev/ttyAMA2
-cap-sonar[4199] I start chip=/dev/gpiochip0 trig=23 echo=24
-store[4196] I start dir=/home/yeahbrah/dlby-demo/log segment=seg-000001.log next_seq=2
-dlby-super[4194] I first_heartbeat name=store ms=10
-dlby-super[4194] I first_heartbeat name=fuse-hub ms=51
-dlby-super[4194] I first_heartbeat name=cap-sonar ms=61
-dlby-super[4194] I first_heartbeat name=cap-radar ms=101
-cap-sonar[4199] I sonar_up
-fuse-hub[4197] I store_back dropped=1
-fuse-hub[4197] I sensor_up name=sonar
-cap-radar[4198] I radar_up
-fuse-hub[4197] I sensor_up name=radar
-fuse-hub[4197] I healthy
-fuse-hub[4197] I stats radar=7 sonar=165 rejected=0
-dlby-super[4194] E child_exit name=fuse-hub signal=SEGV
-dlby-super[4194] I child_restart name=fuse-hub in_ms=100
-cap-sonar[4199] W send_dropped err=Broken pipe count=1
-dlby-super[4194] I child_start name=fuse-hub pid=4203
-fuse-hub[4203] I start sock=/home/yeahbrah/dlby-demo/run/fuse-hub.sock
-fuse-hub[4203] I sensor_up name=sonar
-dlby-super[4194] I first_heartbeat name=fuse-hub ms=13
-cap-radar[4198] W send_dropped err=Broken pipe count=1
-fuse-hub[4203] I sensor_up name=radar
-fuse-hub[4203] I healthy
-fuse-hub[4203] I stats radar=7 sonar=167 rejected=0
-fuse-hub[4203] I stats radar=14 sonar=334 rejected=0
-fuse-hub[4203] I stats radar=21 sonar=501 rejected=0
-fuse-hub[4203] W degraded lost=sonar reason=eof
-dlby-super[4194] E child_exit name=cap-sonar signal=KILL
-dlby-super[4194] I child_restart name=cap-sonar in_ms=100
-dlby-super[4194] I child_start name=cap-sonar pid=4207
-cap-sonar[4207] I start chip=/dev/gpiochip0 trig=23 echo=24
-dlby-super[4194] I first_heartbeat name=cap-sonar ms=60
-cap-sonar[4207] I sonar_up
-fuse-hub[4203] I sensor_up name=sonar
-fuse-hub[4203] I healthy
-fuse-hub[4203] I stats radar=28 sonar=665 rejected=0
-fuse-hub[4203] I stats radar=35 sonar=832 rejected=0
-fuse-hub[4203] I stats radar=43 sonar=1000 rejected=0
-fuse-hub[4203] I stats radar=50 sonar=1166 rejected=0
-fuse-hub[4203] I stats radar=57 sonar=1333 rejected=0
-fuse-hub[4203] I stats radar=64 sonar=1500 rejected=0
-fuse-hub[4203] I stats radar=71 sonar=1667 rejected=0
-fuse-hub[4203] I stats radar=78 sonar=1834 rejected=0
-fuse-hub[4203] I stats radar=86 sonar=2001 rejected=0
-dlby-super[4194] I stop signal=TERM
-cap-sonar[4207] I exit code=0 pings=1445 sent=1444 far=0 missed=0 overruns=0 edges_dropped=0 dropped=0
-fuse-hub[4203] I store_link forwarded=2127 dropped=0
-fuse-hub[4203] I exit code=0 radar=87 sonar=2035 rejected=0
-cap-radar[4198] I exit code=0 frames=100 target_frames=0 bad_len=0 bad_tail=0 sent=99 dropped=1
-dlby-super[4194] I child_exit name=fuse-hub code=0
-dlby-super[4194] I child_exit name=cap-radar code=0
-dlby-super[4194] I child_exit name=cap-sonar code=0
-store[4196] I exit code=0 records=2434 syncs_timed=136 syncs_state=9
-dlby-super[4194] I child_exit name=store code=0
-dlby-super[4194] I exit code=0
-
-$ build/tools/dlby-logcat ~/dlby-demo/log
-segments=1 records=2434 radar=99 sonar=2326 alert=7 gap_msg=1 gap_dropped=1 store_gap=1 other=0 bad=0 first_seq=1 last_seq=2434 contiguous=1
+$ cat ~/dlby-demo/super.log; build/tools/dlby-logcat ~/dlby-demo/log
+dlby-super[4113] I start bin_dir=/home/yeahbrah/dlby-demo/bin children=store,fuse-hub,cap-radar,cap-radar-left,cap-sonar
+dlby-super[4113] I child_start name=store pid=4115
+dlby-super[4113] I child_start name=fuse-hub pid=4116
+dlby-super[4113] I child_start name=cap-radar pid=4117
+dlby-super[4113] I child_start name=cap-radar-left pid=4118
+dlby-super[4113] I child_start name=cap-sonar pid=4119
+fuse-hub[4116] I start sock=/home/yeahbrah/dlby-demo/run/fuse-hub.sock
+cap-radar-left[4118] I start dev=/dev/ttyAMA4
+cap-radar[4117] I start dev=/dev/ttyAMA2
+cap-sonar[4119] I start chip=/dev/gpiochip0 trig=23 echo=24
+store[4115] I start dir=/home/yeahbrah/dlby-demo/log segment=seg-000001.log next_seq=2
+dlby-super[4113] I first_heartbeat name=store ms=10
+dlby-super[4113] I first_heartbeat name=fuse-hub ms=51
+dlby-super[4113] I first_heartbeat name=cap-sonar ms=62
+dlby-super[4113] I first_heartbeat name=cap-radar ms=101
+dlby-super[4113] I first_heartbeat name=cap-radar-left ms=101
+cap-sonar[4119] I sonar_up
+fuse-hub[4116] I store_back dropped=1
+fuse-hub[4116] I sensor_up name=sonar
+cap-radar[4117] I radar_up
+fuse-hub[4116] I sensor_up name=radar
+cap-radar-left[4118] I radar_up
+fuse-hub[4116] I sensor_up name=radar_left
+fuse-hub[4116] I healthy
+fuse-hub[4116] I stats radar=7 radar_left=7 sonar=165 rejected=0
+fuse-hub[4116] I stats radar=14 radar_left=14 sonar=332 rejected=0
+fuse-hub[4116] I stats radar=21 radar_left=21 sonar=499 rejected=0
+fuse-hub[4116] I stats radar=29 radar_left=29 sonar=666 rejected=0
+dlby-super[4113] E child_exit name=fuse-hub signal=SEGV
+dlby-super[4113] I child_restart name=fuse-hub in_ms=100
+cap-sonar[4119] W send_dropped err=Broken pipe count=1
+dlby-super[4113] I child_start name=fuse-hub pid=4124
+fuse-hub[4124] I start sock=/home/yeahbrah/dlby-demo/run/fuse-hub.sock
+fuse-hub[4124] I sensor_up name=sonar
+dlby-super[4113] I first_heartbeat name=fuse-hub ms=14
+cap-radar-left[4118] W send_dropped err=Broken pipe count=1
+cap-radar[4117] W send_dropped err=Broken pipe count=1
+fuse-hub[4124] I sensor_up name=radar_left
+fuse-hub[4124] I sensor_up name=radar
+fuse-hub[4124] I healthy
+fuse-hub[4124] W degraded lost=sonar reason=eof
+dlby-super[4113] E child_exit name=cap-sonar signal=KILL
+dlby-super[4113] I child_restart name=cap-sonar in_ms=100
+dlby-super[4113] I child_start name=cap-sonar pid=4126
+cap-sonar[4126] I start chip=/dev/gpiochip0 trig=23 echo=24
+dlby-super[4113] I first_heartbeat name=cap-sonar ms=60
+fuse-hub[4124] I stats radar=7 radar_left=7 sonar=164 rejected=0
+cap-sonar[4126] I sonar_up
+fuse-hub[4124] I sensor_up name=sonar
+fuse-hub[4124] I healthy
+fuse-hub[4124] I stats radar=14 radar_left=14 sonar=331 rejected=0
+fuse-hub[4124] I stats radar=21 radar_left=21 sonar=498 rejected=0
+fuse-hub[4124] I stats radar=28 radar_left=28 sonar=665 rejected=0
+cap-radar[4117] W radar_silent dev=/dev/ttyAMA2
+fuse-hub[4124] W degraded lost=radar reason=stale
+fuse-hub[4124] I stats radar=29 radar_left=35 sonar=832 rejected=0
+cap-radar-left[4118] W radar_silent dev=/dev/ttyAMA4
+fuse-hub[4124] W degraded lost=radar_left reason=stale
+fuse-hub[4124] I stats radar=29 radar_left=36 sonar=999 rejected=0
+fuse-hub[4124] I stats radar=29 radar_left=36 sonar=1166 rejected=0
+fuse-hub[4124] I stats radar=29 radar_left=36 sonar=1333 rejected=0
+fuse-hub[4124] I stats radar=29 radar_left=36 sonar=1500 rejected=0
+cap-radar-left[4118] I radar_back silent_ms=40433
+fuse-hub[4124] I sensor_up name=radar_left
+cap-radar[4117] I radar_back silent_ms=58557
+fuse-hub[4124] I sensor_up name=radar
+fuse-hub[4124] I healthy
+fuse-hub[4124] I stats radar=30 radar_left=43 sonar=1667 rejected=0
+fuse-hub[4124] I stats radar=38 radar_left=51 sonar=1835 rejected=0
+fuse-hub[4124] I stats radar=45 radar_left=58 sonar=2001 rejected=0
+dlby-super[4113] I stop signal=TERM
+fuse-hub[4124] I store_link forwarded=2238 dropped=0
+fuse-hub[4124] I exit code=0 radar=49 radar_left=63 sonar=2116 rejected=0
+cap-radar-left[4118] I exit code=0 frames=94 target_frames=0 bad_len=0 bad_tail=0 sent=93 dropped=1
+cap-sonar[4126] I exit code=0 pings=1953 sent=1952 far=0 missed=0 overruns=0 edges_dropped=0 dropped=0
+dlby-super[4113] I child_exit name=fuse-hub code=0
+cap-radar[4117] I exit code=0 frames=80 target_frames=0 bad_len=0 bad_tail=0 sent=79 dropped=1
+dlby-super[4113] I child_exit name=cap-sonar code=0
+dlby-super[4113] I child_exit name=cap-radar code=0
+dlby-super[4113] I child_exit name=cap-radar-left code=0
+store[4115] I exit code=0 records=3012 syncs_timed=165 syncs_state=15
+dlby-super[4113] I child_exit name=store code=0
+dlby-super[4113] I exit code=0
+segments=1 records=3012 radar=79 radar_left=93 sonar=2825 alert=13 gap_msg=1 gap_dropped=1 store_gap=1 other=0 bad=0 first_seq=1 last_seq=3012 contiguous=1
