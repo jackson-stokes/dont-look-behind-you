@@ -22,7 +22,7 @@
 #include <unistd.h>
 
 struct summary {
-	uint64_t records, radar, sonar, alert, gap_msg, gap_dropped, store_gap, other;
+	uint64_t records, radar, radar_left, sonar, alert, gap_msg, gap_dropped, store_gap, other;
 	uint64_t bad;
 	uint32_t first_seq, last_seq;
 	bool     any, contiguous;
@@ -42,7 +42,13 @@ static int count_cb(void *ctx, const struct rec *r, const uint8_t *payload)
 	s->last_seq = r->seq;
 	s->records++;
 	switch (r->type) {
-	case MSG_RADAR: s->radar++; break;
+	case MSG_RADAR:
+		/* radar_msg.side is byte 2; a short record can't be a left radar. */
+		if (r->len > 2 && payload[2] == RADAR_LEFT)
+			s->radar_left++;
+		else
+			s->radar++;
+		break;
 	case MSG_SONAR: s->sonar++; break;
 	case MSG_ALERT: s->alert++; break;
 	case REC_GAP:   s->store_gap++; break;
@@ -99,10 +105,11 @@ int main(int argc, char **argv)
 	}
 	free(v);
 
-	printf("segments=%zu records=%" PRIu64 " radar=%" PRIu64 " sonar=%" PRIu64 " alert=%" PRIu64
+	printf("segments=%zu records=%" PRIu64 " radar=%" PRIu64 " radar_left=%" PRIu64
+	       " sonar=%" PRIu64 " alert=%" PRIu64
 	       " gap_msg=%" PRIu64 " gap_dropped=%" PRIu64 " store_gap=%" PRIu64 " other=%" PRIu64
 	       " bad=%" PRIu64 " first_seq=%" PRIu32 " last_seq=%" PRIu32 " contiguous=%d\n",
-	       n, s.records, s.radar, s.sonar, s.alert, s.gap_msg, s.gap_dropped, s.store_gap,
+	       n, s.records, s.radar, s.radar_left, s.sonar, s.alert, s.gap_msg, s.gap_dropped, s.store_gap,
 	       s.other, s.bad, s.first_seq, s.last_seq, s.contiguous ? 1 : 0);
 	return (s.bad == 0 && s.contiguous) ? 0 : 1;
 }

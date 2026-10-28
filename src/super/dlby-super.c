@@ -49,7 +49,7 @@
 #define WATCHDOG_NS     1000000000LL
 #define STOP_GRACE_NS   2000000000LL
 #define MAX_IDLE_MS     1000
-#define MAX_CHILDREN    6
+#define MAX_CHILDREN    7
 
 struct child_def {
 	const char *name;
@@ -64,6 +64,7 @@ static const struct child_def all_children[MAX_CHILDREN] = {
 	{ "alert",      0, false },
 	{ "status-lcd", 0, false },
 	{ "cap-radar",  0, false },
+	{ "cap-radar-left", 0, false },	/* same binary, left radar */
 	{ "cap-sonar",  0, false },
 };
 
