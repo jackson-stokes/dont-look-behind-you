@@ -1,0 +1,74 @@
+M3: real sensors through the real pipeline on the Pi -- 2026-10-27, Gage
+cap-radar + cap-sonar (0590067) -> fuse-hub -> store, run by hand (no dlby-super).
+
+Setup
+  Raspberry Pi 5, kernel 6.18.39+rpt-rpi-2712, gagebranch @ 0590067
+  Wiring and overlay as in docs/evidence/pi-sensor-smoke.txt (right pod only)
+  make && make test on the Pi: all tests passed (build), including
+    capture_e2e: ok (frames=13 sent=13 segments=1 records=17 radar=13 sonar=0 alert=3
+    gap_msg=0 gap_dropped=0 store_gap=1 other=0 bad=0 first_seq=1 last_seq=17 contiguous=1)
+
+  mkdir -p /tmp/dlby && export DLBY_RUN_DIR=/tmp/dlby/run DLBY_LOG_DIR=/tmp/dlby/log
+  build/store 2>/tmp/dlby/store.log &
+  build/fuse-hub 2>/tmp/dlby/hub.log &
+  build/cap-sonar &
+  build/cap-radar &
+
+Run 1: ~72 s; book at a distance, then sonar at open air
+cap-sonar[2730] I start chip=/dev/gpiochip0 trig=23 echo=24
+cap-radar[2731] I start dev=/dev/ttyAMA2
+cap-sonar[2730] I sonar_up
+cap-radar[2731] I radar_up
+cap-sonar[2730] I exit code=0 pings=1196 sent=1195 far=11 missed=0 overruns=0 edges_dropped=0 dropped=0
+cap-radar[2731] I exit code=0 frames=50 target_frames=0 bad_len=0 bad_tail=0 sent=50 dropped=0
+fuse-hub[2729] I start sock=/tmp/dlby/run/fuse-hub.sock
+fuse-hub[2729] I sensor_up name=sonar
+fuse-hub[2729] I sensor_up name=radar
+fuse-hub[2729] I healthy
+fuse-hub[2729] I stats radar=7 sonar=165 rejected=0
+fuse-hub[2729] I stats radar=13 sonar=332 rejected=0
+fuse-hub[2729] I stats radar=20 sonar=499 rejected=0
+fuse-hub[2729] I stats radar=28 sonar=666 rejected=0
+fuse-hub[2729] I stats radar=35 sonar=833 rejected=0
+fuse-hub[2729] I stats radar=42 sonar=1000 rejected=0
+fuse-hub[2729] I stats radar=49 sonar=1167 rejected=0
+fuse-hub[2729] I store_link forwarded=1248 dropped=0
+fuse-hub[2729] I exit code=0 radar=50 sonar=1195 rejected=0
+$ build/tools/dlby-logcat /tmp/dlby/log
+segments=1 records=1249 radar=50 sonar=1195 alert=3 gap_msg=0 gap_dropped=0 store_gap=1 other=0 bad=0 first_seq=1 last_seq=1249 contiguous=1
+
+Run 2: ~42 s; radar TX (pin 29) pulled for ~6 s, then reconnected
+cap-radar[2740] W radar_silent dev=/dev/ttyAMA2
+cap-radar[2740] I exit code=0 frames=23 target_frames=0 bad_len=0 bad_tail=0 sent=23 dropped=0
+cap-sonar[2739] I exit code=0 pings=708 sent=707 far=0 missed=0 overruns=0 edges_dropped=0 dropped=0
+fuse-hub[2738] I start sock=/tmp/dlby/run/fuse-hub.sock
+fuse-hub[2738] I store_back dropped=1
+fuse-hub[2738] I sensor_up name=sonar
+fuse-hub[2738] I sensor_up name=radar
+fuse-hub[2738] I healthy
+fuse-hub[2738] I stats radar=7 sonar=165 rejected=0
+fuse-hub[2738] W degraded lost=radar reason=stale
+fuse-hub[2738] I stats radar=12 sonar=332 rejected=0
+fuse-hub[2738] I sensor_up name=radar
+fuse-hub[2738] I healthy
+fuse-hub[2738] I stats radar=14 sonar=499 rejected=0
+fuse-hub[2738] I stats radar=21 sonar=666 rejected=0
+fuse-hub[2738] I store_link forwarded=734 dropped=1
+fuse-hub[2738] I exit code=0 radar=23 sonar=707 rejected=0
+
+Findings
+- Both real sensors reach store through the real pipeline: run 1 stored 1249
+  records with bad=0 contiguous=1; every message cap-* sent was forwarded.
+- Sonar: 0 missed pings and 0 timer overruns over 1904 pings on absolute 60 ms
+  deadlines. The one unsent ping per run was in flight at SIGTERM.
+- Open air gave far=11 (echo > 25 ms, sent as SONAR_NO_ECHO) and no stuck_high:
+  this HC-SR04 ends its no-target pulse inside the 60 ms ping.
+- Radar: one empty frame every ~1.44 s (50 in ~72 s), 0 bad frames, still no
+  target frame captured (target_frames=0).
+- DESIGN.md §3 radar row on hardware: TX pulled -> cap-radar radar_silent and
+  fuse-hub "degraded lost=radar reason=stale"; reconnected -> sensor_up, healthy.
+- store_back dropped=1 in run 2: store and hub were launched on one line, so the
+  hub's first state record went out before store was listening; the hub counted
+  it and logged the gap as designed. Under dlby-super, store starts first.
+- Range values are not checked here: nothing logs per ping (DESIGN.md §3) and
+  dlby-logcat only counts records.
