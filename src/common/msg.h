@@ -37,8 +37,15 @@ enum fuse_state {
 	ST_DEG_IN_ZONE,
 };
 
-#define LOST_RADAR 0x01u
-#define LOST_SONAR 0x02u
+#define LOST_RADAR      0x01u
+#define LOST_SONAR      0x02u
+#define LOST_RADAR_LEFT 0x04u
+
+/* Which radar sent a radar_msg: cap-radar (right) or cap-radar-left. */
+enum radar_side {
+	RADAR_RIGHT = 0,
+	RADAR_LEFT  = 1,
+};
 
 /* Radar target. PROVISIONAL until the LD2451 frame format is checked (Gage). */
 #define RADAR_MAX_TARGETS 6
@@ -53,7 +60,8 @@ struct radar_target {
 struct radar_msg {		/* cap-radar -> fuse-hub, 10 Hz */
 	uint8_t  type;		/* MSG_RADAR */
 	uint8_t  ntargets;
-	uint8_t  pad[2];
+	uint8_t  side;		/* enum radar_side */
+	uint8_t  pad;
 	uint32_t seq;
 	uint64_t origin_ns;	/* user-space read time */
 	struct radar_target t[RADAR_MAX_TARGETS];
@@ -105,6 +113,7 @@ static_assert(sizeof(struct sonar_msg) == 24, "sonar_msg size");
 static_assert(sizeof(struct alert_msg) == 16, "alert_msg size");
 static_assert(sizeof(struct hb_msg) == 8, "hb_msg size");
 static_assert(sizeof(struct gap_msg) == 24, "gap_msg size");
+static_assert(offsetof(struct radar_msg, side) == 2, "radar_msg side");
 static_assert(offsetof(struct radar_msg, seq) == 4 && offsetof(struct radar_msg, origin_ns) == 8,
 	      "radar_msg header");
 static_assert(offsetof(struct sonar_msg, seq) == 4 && offsetof(struct sonar_msg, origin_ns) == 8,

@@ -1,12 +1,14 @@
-/* Fake cap-radar / cap-sonar for testing fuse-hub without hardware. Never deployed.
+/* Fake cap-radar / cap-radar-left / cap-sonar for testing fuse-hub without
+ * hardware. Never deployed.
  *
- *   fake-sensors radar|sonar <send_s> [hold_s]
+ *   fake-sensors radar|radar_left|sonar <send_s> [hold_s]
  *
  * Sends at the real rate (health.h) on absolute deadlines for send_s seconds, then
  * keeps the connection open and silent for hold_s (default 0) so the hub sees a
  * stale sensor rather than an EOF.
  *
- * Demo mode: run with no arguments as "cap-radar" or "cap-sonar" (a symlink), it
+ * Demo mode: run with no arguments as "cap-radar", "cap-radar-left" or "cap-sonar"
+ * (a symlink), it
  * takes the sensor from its name, sends until SIGTERM and heartbeats to
  * dlby-super (hb.h), so super can run it in place of the real capture process.
  *
@@ -65,7 +67,7 @@ static int sleep_until(int64_t t_ns)
 	return r == EINTR ? 0 : r;
 }
 
-static void fill_radar(struct radar_msg *m, uint32_t seq, int64_t now)
+static void fill_radar(struct radar_msg *m, uint32_t seq, int64_t now, uint8_t side)
 {
 	int range_cm = 5000 - 50 * (int)(seq % 98);
 
@@ -73,6 +75,7 @@ static void fill_radar(struct radar_msg *m, uint32_t seq, int64_t now)
 	m->type = MSG_RADAR;
 	m->seq = seq;
 	m->origin_ns = (uint64_t)now;
+	m->side = side;
 	m->ntargets = 1;
 	m->t[0].range_cm = (uint16_t)(range_cm > 100 ? range_cm : 100);
 	m->t[0].speed_cms = -500;
@@ -103,19 +106,22 @@ int main(int argc, char **argv)
 	int64_t send_ns = 0, hold_ns = 0, period, start, end, deadline, now;
 	uint64_t sent = 0;
 	uint32_t seq;
-	bool radar, demo;
+	bool radar, left, demo;
 	int r;
 
-	demo = argc == 1 && (strcmp(base, "cap-radar") == 0 || strcmp(base, "cap-sonar") == 0);
-	if (!demo && (argc < 3 || argc > 4 || (strcmp(argv[1], "radar") && strcmp(argv[1], "sonar")) ||
+	demo = argc == 1 && (strcmp(base, "cap-radar") == 0 || strcmp(base, "cap-radar-left") == 0 ||
+			     strcmp(base, "cap-sonar") == 0);
+	if (!demo && (argc < 3 || argc > 4 ||
+		      (strcmp(argv[1], "radar") && strcmp(argv[1], "radar_left") && strcmp(argv[1], "sonar")) ||
 		      parse_secs(argv[2], &send_ns) < 0 ||
 		      (argc == 4 && parse_secs(argv[3], &hold_ns) < 0))) {
 		log_init("fake-sensors");
-		log_msg(LOG_E, "usage args=\"radar|sonar <send_s> [hold_s]\"");
+		log_msg(LOG_E, "usage args=\"radar|radar_left|sonar <send_s> [hold_s]\"");
 		return EX_USAGE;
 	}
-	radar = demo ? strcmp(base, "cap-radar") == 0 : strcmp(argv[1], "radar") == 0;
-	log_init(demo ? base : radar ? "fake-radar" : "fake-sonar");
+	left = demo ? strcmp(base, "cap-radar-left") == 0 : strcmp(argv[1], "radar_left") == 0;
+	radar = left || (demo ? strcmp(base, "cap-radar") == 0 : strcmp(argv[1], "radar") == 0);
+	log_init(demo ? base : left ? "fake-radar-left" : radar ? "fake-radar" : "fake-sonar");
 	if (hb_init(&hb) < 0) {
 		log_msg(LOG_E, "hb_init_failed err=%s", strerror(errno));
 		return EX_SOFTWARE;
@@ -147,7 +153,7 @@ int main(int argc, char **argv)
 			break;
 		}
 		if (radar) {
-			fill_radar(&rm, seq, now);
+			fill_radar(&rm, seq, now, left ? RADAR_LEFT : RADAR_RIGHT);
 			r = ipc_send(&c, &rm, sizeof(rm), now);
 		} else {
 			fill_sonar(&sm, seq, now, !demo && end - now <= SEC_NS);

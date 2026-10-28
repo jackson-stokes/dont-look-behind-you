@@ -1,22 +1,25 @@
 #!/bin/sh
 # End-to-end for the capture processes without hardware. Usage: capture_e2e.sh <builddir>
 #
-# fake-ld2451 (pty) -> real cap-radar -> fuse-hub -> store for ~2 s, with junk,
-# bad tails, bad lengths, a payload frame and a split frame on the wire; then
-# SIGTERM cap-radar (exit 0) and verify the log with dlby-logcat. Also: cap-radar
-# and cap-sonar exit 78 when their device is missing.
+# Two fake-ld2451 ptys -> real cap-radar and cap-radar-left (the same binary
+# under its second name) -> fuse-hub -> store for ~2 s, with junk, bad tails, bad
+# lengths, a payload frame and a split frame on the wire; then SIGTERM both
+# (exit 0) and verify the log with dlby-logcat, right and left counted apart.
+# Also: cap-radar, cap-radar-left and cap-sonar exit 78 when their device is missing.
 set -u
-B=$1
+B=$(cd "$1" && pwd) || exit 1	# absolute: the cap-radar-left symlink lives in $T
 T=$(mktemp -d /tmp/dlby-capture-e2e-XXXXXX) || exit 1
 export DLBY_RUN_DIR="$T/run"
 export DLBY_LOG_DIR="$T/log"
 hub=""
 store=""
 fake=""
+fake_l=""
 radar=""
+left=""
 
 cleanup() {
-	for p in $radar $fake $hub $store; do
+	for p in $radar $left $fake $fake_l $hub $store; do
 		kill -KILL "$p" 2>/dev/null
 	done
 	rm -rf "$T"
@@ -43,6 +46,12 @@ rc=$?
 [ "$rc" -eq 78 ] || fail "cap-radar with a missing device exited $rc, want 78"
 grep -q -E '^cap-radar\[[0-9]+\] E open_failed dev=[^ ]+ err=' "$T/radar-missing.log" ||
 	fail "no open_failed line from cap-radar"
+ln -s "$B/cap-radar" "$T/cap-radar-left" || fail "symlink cap-radar-left"
+DLBY_RADAR_LEFT_DEV="$T/no-such-left" "$T/cap-radar-left" 2>"$T/left-missing.log"
+rc=$?
+[ "$rc" -eq 78 ] || fail "cap-radar-left with a missing device exited $rc, want 78"
+grep -q -E "^cap-radar-left\[[0-9]+\] E open_failed dev=$T/no-such-left err=" "$T/left-missing.log" ||
+	fail "cap-radar-left did not use DLBY_RADAR_LEFT_DEV"
 DLBY_SONAR_CHIP="$T/no-such-chip" "$B/cap-sonar" 2>"$T/sonar-missing.log"
 rc=$?
 [ "$rc" -eq 78 ] || fail "cap-sonar with a missing chip exited $rc, want 78"
@@ -71,23 +80,36 @@ done
 
 "$B/tools/fake-ld2451" "$T/ttyRADAR" 3 2>"$T/fake.log" &
 fake=$!
+"$B/tools/fake-ld2451" "$T/ttyLEFT" 3 2>"$T/fake-left.log" &
+fake_l=$!
 i=0
-while [ ! -L "$T/ttyRADAR" ]; do
+while [ ! -L "$T/ttyRADAR" ] || [ ! -L "$T/ttyLEFT" ]; do
 	i=$((i + 1))
-	[ "$i" -gt 40 ] && fail "fake radar pty did not appear within 2 s"
+	[ "$i" -gt 40 ] && fail "fake radar ptys did not appear within 2 s"
 	sleep 0.05
 done
 
-DLBY_RADAR_DEV="$T/ttyRADAR" "$B/cap-radar" 2>"$T/radar.log" &
+# Both radars' variables are set, as under dlby-super: each must pick its own.
+export DLBY_RADAR_DEV="$T/ttyRADAR" DLBY_RADAR_LEFT_DEV="$T/ttyLEFT"
+"$B/cap-radar" 2>"$T/radar.log" &
 radar=$!
+"$T/cap-radar-left" 2>"$T/left.log" &
+left=$!
 sleep 2
 kill -TERM "$radar" || fail "cap-radar already gone"
+kill -TERM "$left" || fail "cap-radar-left already gone"
 wait "$radar"
 rc=$?
 radar=""
 [ "$rc" -eq 0 ] || fail "cap-radar exited $rc on SIGTERM, want 0"
+wait "$left"
+rc=$?
+left=""
+[ "$rc" -eq 0 ] || fail "cap-radar-left exited $rc on SIGTERM, want 0"
 wait "$fake" || fail "fake-ld2451 exited $?"
 fake=""
+wait "$fake_l" || fail "fake-ld2451 (left) exited $?"
+fake_l=""
 
 sleep 0.2	# let the hub read cap-radar's EOF
 kill -TERM "$hub" || fail "hub already gone"
@@ -114,6 +136,16 @@ grep -q -E '^cap-radar\[[0-9]+\] I target_frame len=4 hex=f4f3f2f1040001020304f8
 	"$T/radar.log" || fail "no target_frame hex line"
 grep -q -E '^cap-radar\[[0-9]+\] W radar_silent' "$T/radar.log" && fail "radar_silent while frames flowed"
 grep -q -E '^fuse-hub\[[0-9]+\] I sensor_up name=radar$' "$T/hub.log" || fail "hub never saw the radar"
+grep -q -E '^fuse-hub\[[0-9]+\] I sensor_up name=radar_left$' "$T/hub.log" ||
+	fail "hub never saw the left radar"
+grep -q -E "^cap-radar-left\[[0-9]+\] I start dev=$T/ttyLEFT$" "$T/left.log" ||
+	fail "cap-radar-left did not open the left device"
+bad=$(grep -v -E '^cap-radar-left\[[0-9]+\] [IWE] [a-z_]+( [a-z_]+=[^ ]*)*$' "$T/left.log")
+[ -z "$bad" ] || fail "malformed left log line: $bad"
+ex_l=$(grep -E '^cap-radar-left\[[0-9]+\] I exit code=0 ' "$T/left.log")
+[ -n "$ex_l" ] || fail "no clean exit line from cap-radar-left"
+sent_l=$(field sent "$ex_l")
+[ "$(field frames "$ex_l")" -ge 8 ] || fail "too few left frames: $ex_l"
 
 ex=$(grep -E '^cap-radar\[[0-9]+\] I exit code=0 ' "$T/radar.log")
 [ -n "$ex" ] || fail "no clean exit line"
@@ -129,5 +161,7 @@ sum=$("$B/tools/dlby-logcat" "$DLBY_LOG_DIR") || fail "dlby-logcat: $sum"
 [ "$(field bad "$sum")" -eq 0 ] || fail "bad bytes kept: $sum"
 [ "$(field contiguous "$sum")" -eq 1 ] || fail "seq not contiguous: $sum"
 [ "$(field radar "$sum")" -eq "$sent" ] || fail "store has $(field radar "$sum") radar records, cap-radar sent $sent"
+[ "$(field radar_left "$sum")" -eq "$sent_l" ] ||
+	fail "store has $(field radar_left "$sum") left radar records, cap-radar-left sent $sent_l"
 
-echo "capture_e2e: ok (frames=$frames sent=$sent $sum)"
+echo "capture_e2e: ok (frames=$frames sent=$sent sent_left=$sent_l $sum)"

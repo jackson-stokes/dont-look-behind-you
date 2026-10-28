@@ -46,7 +46,8 @@ Status as of 2026-10-12. Feeds the M2 design document.
 ## Pi 5 pin map (draft; verify before wiring, power off)
 | Function | Interface | GPIO | Notes |
 |---|---|---|---|
-| Radar | UART2 | TX 4 / RX 5 | `dtoverlay=uart2-pi5` |
+| Radar (right) | UART2 | TX 4 / RX 5 | `dtoverlay=uart2-pi5`, `/dev/ttyAMA2`, read by `cap-radar` |
+| Radar (left) | UART4 | TX 12 / RX 13 | `dtoverlay=uart4-pi5`, `/dev/ttyAMA4`, read by `cap-radar-left`. Pins 32 (Pi TX → radar RX) and 33 (radar TX → Pi RX) |
 | Ultrasonic TRIG | GPIO out | 23 | |
 | Ultrasonic ECHO | GPIO in | 24 | 5V output: 1k/2k divider required |
 | LCD | I2C1 | SDA 2 / SCL 3 | `dtparam=i2c_arm=on` |

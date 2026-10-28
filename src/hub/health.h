@@ -16,12 +16,13 @@
 #define SONAR_LOSS_NS   (8 * SONAR_PERIOD_NS)	/* 8 pings = 480 ms */
 
 enum sensor {
-	SENSOR_RADAR = 0,
-	SENSOR_SONAR = 1,
+	SENSOR_RADAR      = 0,	/* right radar */
+	SENSOR_SONAR      = 1,
+	SENSOR_RADAR_LEFT = 2,
 	SENSOR_N,
 };
 
-/* BLIND: no sensor up. DEG: one up. OK: both up. */
+/* BLIND: no sensor up. DEG: some up. OK: all up. */
 enum health_state {
 	H_BLIND,
 	H_DEG,

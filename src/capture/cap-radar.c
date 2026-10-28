@@ -2,7 +2,11 @@
  * radar_msg per valid frame to fuse-hub (DESIGN.md §1). Heartbeats to
  * dlby-super from the main loop (hb.h); standalone when not supervised.
  *
- *   $DLBY_RADAR_DEV   serial device (default /dev/ttyAMA2: UART2, GPIO 4/5)
+ * One binary, two radars: run as cap-radar it is the right radar, run as
+ * cap-radar-left (a symlink) the left one. The side goes in every message.
+ *
+ *   $DLBY_RADAR_DEV       right radar (default /dev/ttyAMA2: UART2, GPIO 4/5)
+ *   $DLBY_RADAR_LEFT_DEV  left radar (default /dev/ttyAMA4: UART4, GPIO 12/13)
  *
  * Every message has ntargets=0 until a real target capture verifies the
  * LD2451 target layout; frames with a payload are counted and logged in hex
@@ -34,11 +38,11 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define DEV_ENV     "DLBY_RADAR_DEV"
-#define DEV_DEFAULT "/dev/ttyAMA2"
+#define LEFT_NAME   "cap-radar-left"
 #define POLL_MS     100
 
 struct radar {
+	uint8_t side;		/* enum radar_side */
 	struct radar_parser p;
 	struct ipc_conn hub;
 	uint32_t seq;
@@ -101,6 +105,7 @@ static void on_frame(struct radar *r, int64_t now)
 	memset(&m, 0, sizeof(m));
 	m.type = MSG_RADAR;
 	m.ntargets = 0;		/* target layout unverified: see the header comment */
+	m.side = r->side;
 	m.seq = r->seq++;
 	m.origin_ns = (uint64_t)now;
 	if (ipc_send(&r->hub, &m, sizeof(m), now) == 0)
@@ -141,25 +146,29 @@ static int signal_fd(void)
 	return signalfd(-1, &mask, SFD_CLOEXEC);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	const char *base = strrchr(argv[0], '/') ? strrchr(argv[0], '/') + 1 : argv[0];
+	bool left = strcmp(base, LEFT_NAME) == 0;
 	struct radar r;
 	struct hb hb;
 	struct pollfd pfd[3];
 	struct signalfd_siginfo si;
 	uint8_t buf[256];
-	const char *dev = getenv(DEV_ENV);
+	const char *dev = getenv(left ? "DLBY_RADAR_LEFT_DEV" : "DLBY_RADAR_DEV");
 	int64_t now, start;
 	int sfd = -1, tty = -1, rc = EX_SOFTWARE, supervised;
 	ssize_t n;
 
-	log_init("cap-radar");
+	(void)argc;
+	log_init(left ? LEFT_NAME : "cap-radar");
 	memset(&r, 0, sizeof(r));
+	r.side = left ? RADAR_LEFT : RADAR_RIGHT;
 	r.hub.fd = -1;		/* an early goto out must not close fd 0 */
 	r.last_frame_ns = -1;
 	radar_parser_init(&r.p);
 	if (!dev || !*dev)
-		dev = DEV_DEFAULT;
+		dev = left ? "/dev/ttyAMA4" : "/dev/ttyAMA2";
 
 	supervised = hb_init(&hb);
 	if (supervised < 0) {

@@ -12,7 +12,8 @@ static void test_starts_blind(void)
 	CHECK(health_tick(&h, 10000 * MS) == 0);
 }
 
-static void test_both_up_is_ok(void)
+/* OK needs every sensor: both radars and the sonar. */
+static void test_all_up_is_ok(void)
 {
 	struct health h;
 
@@ -21,7 +22,37 @@ static void test_both_up_is_ok(void)
 	CHECK(health_state(&h) == H_DEG);
 	CHECK(!health_rx(&h, SENSOR_RADAR, 100 * MS));	/* already up */
 	CHECK(health_rx(&h, SENSOR_SONAR, 100 * MS));
+	CHECK(health_state(&h) == H_DEG);		/* left radar still missing */
+	CHECK(health_rx(&h, SENSOR_RADAR_LEFT, 100 * MS));
 	CHECK(health_state(&h) == H_OK);
+}
+
+/* The left radar is its own sensor: the right one can't hide its loss. */
+static void test_left_radar_loss(void)
+{
+	struct health h;
+
+	health_init(&h);
+	health_rx(&h, SENSOR_RADAR, 0);
+	health_rx(&h, SENSOR_SONAR, 0);
+	health_rx(&h, SENSOR_RADAR_LEFT, 0);
+	health_rx(&h, SENSOR_RADAR, RADAR_LOSS_NS);	/* right radar and sonar stay fresh */
+	health_rx(&h, SENSOR_SONAR, RADAR_LOSS_NS);
+	CHECK(health_tick(&h, RADAR_LOSS_NS) == 0);
+	CHECK(health_tick(&h, RADAR_LOSS_NS + 1) == (1u << SENSOR_RADAR_LEFT));
+	CHECK(health_state(&h) == H_DEG && h.up[SENSOR_RADAR] && !h.up[SENSOR_RADAR_LEFT]);
+	CHECK(health_rx(&h, SENSOR_RADAR_LEFT, RADAR_LOSS_NS + 2));
+	CHECK(health_state(&h) == H_OK);
+	CHECK(health_eof(&h, SENSOR_RADAR_LEFT));
+	CHECK(health_state(&h) == H_DEG && h.up[SENSOR_RADAR]);
+}
+
+static void test_names(void)
+{
+	CHECK(strcmp(sensor_name(SENSOR_RADAR), "radar") == 0);
+	CHECK(strcmp(sensor_name(SENSOR_SONAR), "sonar") == 0);
+	CHECK(strcmp(sensor_name(SENSOR_RADAR_LEFT), "radar_left") == 0);
+	CHECK(strcmp(sensor_name((enum sensor)SENSOR_N), "unknown") == 0);
 }
 
 static void test_sonar_loss_boundary(void)
@@ -32,7 +63,9 @@ static void test_sonar_loss_boundary(void)
 	health_init(&h);
 	health_rx(&h, SENSOR_RADAR, 0);
 	health_rx(&h, SENSOR_SONAR, 0);
-	health_rx(&h, SENSOR_RADAR, SONAR_LOSS_NS);	/* keep radar fresh */
+	health_rx(&h, SENSOR_RADAR_LEFT, 0);
+	health_rx(&h, SENSOR_RADAR, SONAR_LOSS_NS);	/* keep the radars fresh */
+	health_rx(&h, SENSOR_RADAR_LEFT, SONAR_LOSS_NS);
 	CHECK(health_tick(&h, SONAR_LOSS_NS) == 0);
 	CHECK(health_state(&h) == H_OK);
 	CHECK(health_tick(&h, SONAR_LOSS_NS + 1) == (1u << SENSOR_SONAR));
@@ -116,13 +149,17 @@ static void test_recovery(void)
 	CHECK(health_rx(&h, SENSOR_SONAR, 5000 * MS));
 	CHECK(health_state(&h) == H_DEG);
 	CHECK(health_rx(&h, SENSOR_RADAR, 5000 * MS));
+	CHECK(health_state(&h) == H_DEG);		/* left radar never came up */
+	CHECK(health_rx(&h, SENSOR_RADAR_LEFT, 5000 * MS));
 	CHECK(health_state(&h) == H_OK);
 }
 
 int main(void)
 {
 	RUN(test_starts_blind);
-	RUN(test_both_up_is_ok);
+	RUN(test_all_up_is_ok);
+	RUN(test_left_radar_loss);
+	RUN(test_names);
 	RUN(test_sonar_loss_boundary);
 	RUN(test_radar_loss_boundary);
 	RUN(test_empty_frame_rate_keeps_radar_up);

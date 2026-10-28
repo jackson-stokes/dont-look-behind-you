@@ -1,5 +1,5 @@
-/* fuse-hub, minimal (M3 steps 2-4): receives cap-radar/cap-sonar messages,
- * validates them, tracks per-sensor health (DESIGN.md §1, §3) and forwards a
+/* fuse-hub, minimal (M3 steps 2-4): receives cap-radar, cap-radar-left and
+ * cap-sonar messages (radar side from radar_msg.side), validates them, tracks per-sensor health (DESIGN.md §1, §3) and forwards a
  * copy of every message, plus each state change, to store. Heartbeats to
  * dlby-super from the main loop (hb.h); standalone when not supervised.
  *
@@ -84,7 +84,8 @@ static void send_state(struct hub *hub, int64_t now)
 	m.type = MSG_ALERT;
 	m.state = to_fuse[health_state(&hub->h)];
 	m.lost_mask = (uint8_t)((hub->h.up[SENSOR_RADAR] ? 0 : LOST_RADAR) |
-				(hub->h.up[SENSOR_SONAR] ? 0 : LOST_SONAR));
+				(hub->h.up[SENSOR_SONAR] ? 0 : LOST_SONAR) |
+				(hub->h.up[SENSOR_RADAR_LEFT] ? 0 : LOST_RADAR_LEFT));
 	m.seq = hub->out_seq++;
 	m.origin_ns = (uint64_t)now;
 	store_send(hub, &m, sizeof(m), now);
@@ -105,7 +106,8 @@ static void report_lost(struct hub *hub, unsigned mask, const char *reason, int6
 	if (!mask)
 		return;
 	if (health_state(&hub->h) == H_BLIND) {
-		log_msg(LOG_E, "blind lost=radar,sonar reason=%s", reason);
+		log_msg(LOG_E, "blind lost=%s,%s,%s reason=%s", sensor_name(SENSOR_RADAR),
+			sensor_name(SENSOR_SONAR), sensor_name(SENSOR_RADAR_LEFT), reason);
 	} else {
 		for (s = 0; s < SENSOR_N; s++)
 			if (mask & (1u << s))
@@ -199,7 +201,19 @@ static void read_client(struct hub *hub, int i, int64_t now)
 		return;
 	}
 	if (type == MSG_RADAR) {
-		s = SENSOR_RADAR;
+		struct radar_msg rm;
+
+		memcpy(&rm, buf, sizeof(rm));	/* length checked by ipc_check_msg */
+		if (rm.side == RADAR_RIGHT) {
+			s = SENSOR_RADAR;
+		} else if (rm.side == RADAR_LEFT) {
+			s = SENSOR_RADAR_LEFT;
+		} else {
+			hub->rejected++;
+			log_limited(&hub->lim_bad, now, LOG_W, "bad_msg reason=side side=%u",
+				    (unsigned)rm.side);
+			return;
+		}
 	} else if (type == MSG_SONAR) {
 		s = SENSOR_SONAR;
 	} else {
@@ -332,8 +346,9 @@ int main(void)
 			goto out;
 		}
 		if (now >= next_stats) {
-			log_msg(LOG_I, "stats radar=%" PRIu64 " sonar=%" PRIu64 " rejected=%" PRIu64,
-				hub.rx[SENSOR_RADAR], hub.rx[SENSOR_SONAR], hub.rejected);
+			log_msg(LOG_I, "stats radar=%" PRIu64 " radar_left=%" PRIu64 " sonar=%" PRIu64
+				" rejected=%" PRIu64, hub.rx[SENSOR_RADAR], hub.rx[SENSOR_RADAR_LEFT],
+				hub.rx[SENSOR_SONAR], hub.rejected);
 			next_stats = now + STATS_NS;
 		}
 	}
@@ -349,7 +364,8 @@ out:
 	ipc_conn_close(&hub.store);
 	log_msg(LOG_I, "store_link forwarded=%" PRIu64 " dropped=%" PRIu64, hub.store_fwd,
 		hub.store_dropped);
-	log_msg(rc == EX_OK ? LOG_I : LOG_E, "exit code=%d radar=%" PRIu64 " sonar=%" PRIu64
-		" rejected=%" PRIu64, rc, hub.rx[SENSOR_RADAR], hub.rx[SENSOR_SONAR], hub.rejected);
+	log_msg(rc == EX_OK ? LOG_I : LOG_E, "exit code=%d radar=%" PRIu64 " radar_left=%" PRIu64
+		" sonar=%" PRIu64 " rejected=%" PRIu64, rc, hub.rx[SENSOR_RADAR],
+		hub.rx[SENSOR_RADAR_LEFT], hub.rx[SENSOR_SONAR], hub.rejected);
 	return rc;
 }

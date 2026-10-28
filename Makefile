@@ -141,6 +141,7 @@ install: $(PRODUCT)
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)/etc/systemd/system \
 		$(DESTDIR)/etc/systemd/system.conf.d $(DESTDIR)/etc/systemd/journald.conf.d
 	install -m 0755 $(PRODUCT) $(DESTDIR)$(PREFIX)/bin/
+	ln -sf cap-radar $(DESTDIR)$(PREFIX)/bin/cap-radar-left
 	install -m 0644 deploy/dlby.service $(DESTDIR)/etc/systemd/system/dlby.service
 	install -m 0644 deploy/system.conf.d/dlby-watchdog.conf $(DESTDIR)/etc/systemd/system.conf.d/
 	install -m 0644 deploy/journald.conf.d/dlby.conf $(DESTDIR)/etc/systemd/journald.conf.d/

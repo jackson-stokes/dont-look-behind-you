@@ -1,9 +1,10 @@
 #!/bin/sh
 # End-to-end for dlby-super (DESIGN.md §2 E, §3, §6 "E restart"). Usage: super_e2e.sh <builddir>
 #
-# Children: the real store and fuse-hub; fake-sensors as cap-sonar, so real sonar
-# data flows cap-sonar -> fuse-hub -> store; fake-child as alert (crashes once at
-# 1 s), status-lcd (exits 78) and cap-radar (hangs once at 1 s, ignoring SIGTERM).
+# Children: the real store and fuse-hub; fake-sensors as cap-sonar and cap-radar-left,
+# so real sonar and left-radar data flows -> fuse-hub -> store; fake-child as alert
+# (crashes once at 1 s), status-lcd (exits 78) and cap-radar (hangs once at 1 s,
+# ignoring SIGTERM).
 #
 # Phase 1, one super:
 #   start order and first heartbeats; kill -SEGV fuse-hub -> new hub within 1 s and
@@ -93,7 +94,8 @@ sonar_records() {
 
 mkdir -p "$T/bin" "$T/state" || fail "mkdir"
 ln -s "$B/store" "$T/bin/store" && ln -s "$B/fuse-hub" "$T/bin/fuse-hub" &&
-	ln -s "$B/tools/fake-sensors" "$T/bin/cap-sonar" || fail "symlinks"
+	ln -s "$B/tools/fake-sensors" "$T/bin/cap-sonar" &&
+	ln -s "$B/tools/fake-sensors" "$T/bin/cap-radar-left" || fail "symlinks"
 for n in alert status-lcd cap-radar; do
 	ln -s "$B/tools/fake-child" "$T/bin/$n" || fail "symlink $n"
 done
@@ -101,12 +103,13 @@ done
 # ---- phase 1
 "$B/dlby-super" 2>"$LOG" &
 super=$!
-for n in store fuse-hub alert cap-radar cap-sonar; do
+for n in store fuse-hub alert cap-radar cap-radar-left cap-sonar; do
 	wait_for "^dlby-super\[[0-9]+\] I first_heartbeat name=$n " "$LOG" 3000 ||
 		fail "no first_heartbeat for $n"
 done
-order=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=\([^ ]*\) .*/\1/p' "$LOG" | head -n 6 | tr '\n' ' ')
-[ "$order" = "store fuse-hub alert status-lcd cap-radar cap-sonar " ] || fail "start order: $order"
+order=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=\([^ ]*\) .*/\1/p' "$LOG" | head -n 7 | tr '\n' ' ')
+[ "$order" = "store fuse-hub alert status-lcd cap-radar cap-radar-left cap-sonar " ] ||
+	fail "start order: $order"
 
 # fuse-hub crash: a new hub must be up within 1 s (§6 E restart).
 hub=$(pid_of fuse-hub "$LOG")
@@ -182,7 +185,7 @@ sum=$("$B/tools/dlby-logcat" "$DLBY_LOG_DIR") || fail "dlby-logcat: $sum"
 # ---- phase 2: super dies by SIGKILL; the children must follow.
 "$B/dlby-super" 2>"$LOG2" &
 super=$!
-for n in store fuse-hub alert cap-radar cap-sonar; do
+for n in store fuse-hub alert cap-radar cap-radar-left cap-sonar; do
 	wait_for "^dlby-super\[[0-9]+\] I first_heartbeat name=$n " "$LOG2" 3000 ||
 		fail "phase 2: no first_heartbeat for $n"
 done

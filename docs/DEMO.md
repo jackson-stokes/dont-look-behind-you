@@ -68,6 +68,7 @@ Your `cap-radar` and `cap-sonar` work under the supervisor only if they:
 Then:
 ```sh
 ln -sf /path/to/your/cap-radar ~/dlby-demo/bin/cap-radar
+ln -sf /path/to/your/cap-radar ~/dlby-demo/bin/cap-radar-left   # same binary, left radar
 ln -sf /path/to/your/cap-sonar ~/dlby-demo/bin/cap-sonar
 ```
 
@@ -76,6 +77,7 @@ If the capture processes aren't ready, use `fake-sensors`. It sends radar at 10 
 at 16 Hz through the same IPC, hub and store, and heartbeats like a real child:
 ```sh
 ln -sf ~/dlby-src/build/tools/fake-sensors ~/dlby-demo/bin/cap-radar
+ln -sf ~/dlby-src/build/tools/fake-sensors ~/dlby-demo/bin/cap-radar-left
 ln -sf ~/dlby-src/build/tools/fake-sensors ~/dlby-demo/bin/cap-sonar
 ```
 **If you use B, say so in the video**, for example: "the sensors here are simulated by
@@ -88,7 +90,7 @@ both, run:
 ```sh
 cd ~/dlby-src
 export DLBY_RUN_DIR=$HOME/dlby-demo/run DLBY_LOG_DIR=$HOME/dlby-demo/log DLBY_BIN_DIR=$HOME/dlby-demo/bin
-export DLBY_CHILDREN=store,fuse-hub,cap-radar,cap-sonar
+export DLBY_CHILDREN=store,fuse-hub,cap-radar,cap-radar-left,cap-sonar
 ```
 `alert` and `status-lcd` aren't written yet, so `DLBY_CHILDREN` leaves them out. Otherwise
 super would log `code=78` and `child_disabled` for each one.
@@ -114,15 +116,17 @@ build/dlby-super 2>&1 | tee ~/dlby-demo/super.log
 ```
 Within about a second you should see:
 ```
-dlby-super[…] I start bin_dir=… children=store,fuse-hub,cap-radar,cap-sonar
+dlby-super[…] I start bin_dir=… children=store,fuse-hub,cap-radar,cap-radar-left,cap-sonar
 dlby-super[…] I child_start name=store pid=…
 dlby-super[…] I child_start name=fuse-hub pid=…
 dlby-super[…] I child_start name=cap-radar pid=…
+dlby-super[…] I child_start name=cap-radar-left pid=…
 dlby-super[…] I child_start name=cap-sonar pid=…
 dlby-super[…] I first_heartbeat name=… ms=…        (one per child)
 store[…] I start dir=… segment=seg-000001.log next_seq=2
 fuse-hub[…] I start sock=…
 fuse-hub[…] I sensor_up name=radar
+fuse-hub[…] I sensor_up name=radar_left
 fuse-hub[…] I sensor_up name=sonar
 fuse-hub[…] I healthy
 ```
