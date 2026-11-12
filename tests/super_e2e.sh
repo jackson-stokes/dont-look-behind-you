@@ -150,7 +150,8 @@ grep -q -E '^dlby-super\[[0-9]+\] E heartbeat_lost name=cap-radar$' "$LOG" ||
 	fail "no heartbeat_lost name=cap-radar"
 wait_count '^dlby-super\[[0-9]+\] I child_start name=cap-radar ' "$LOG" 2 2000 ||
 	fail "cap-radar not restarted"
-wait_for '^dlby-super\[[0-9]+\] I first_heartbeat name=cap-radar ' "$LOG" 3000 ||
+# The second first_heartbeat: the first run's line already matches a plain wait_for.
+wait_count '^dlby-super\[[0-9]+\] I first_heartbeat name=cap-radar ' "$LOG" 2 3000 ||
 	fail "restarted cap-radar never heartbeat"
 
 kill -TERM "$super" || fail "super already gone"
