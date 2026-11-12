@@ -61,7 +61,7 @@ $(BUILD)/hub/%.o: src/hub/%.c $(HUB_HDR) $(COMMON_HDR)
 	$(CC) $(CPPFLAGS) -Isrc/hub $(ALL_CFLAGS) -c -o $@ $<
 
 # fuse-hub's testable parts (everything but main), linked into the unit tests.
-$(HUB_LIB): $(BUILD)/hub/health.o
+$(HUB_LIB): $(BUILD)/hub/health.o $(BUILD)/hub/fuse.o
 	$(AR) rcs $@ $^
 
 $(BUILD)/fuse-hub: $(BUILD)/hub/fuse-hub.o $(HUB_LIB) $(LIB)
