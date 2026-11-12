@@ -3,22 +3,26 @@
  * copy of every message, plus each state change, to store. Heartbeats to
  * dlby-super from the main loop (hb.h); standalone when not supervised.
  *
+ * Event counts every $DLBY_REPORT_S and a final=1 line on exit (report.h).
+ *
  * Not yet: APPROACHING/IN_ZONE fusion, forwarding to alert, SCHED_FIFO 70 and
  * mlockall.
  *
  * Exit codes: 0 on SIGTERM/SIGINT or when dlby-super is gone, 69 if the socket
- * can't be set up, 70 on any other unexpected failure.
+ * can't be set up, 78 on a bad setting, 70 on any other unexpected failure.
  */
 #include "hb.h"
 #include "health.h"
 #include "ipc.h"
 #include "log.h"
 #include "msg.h"
+#include "report.h"
 
 #include <errno.h>
 #include <inttypes.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/signalfd.h>
 #include <sysexits.h>
@@ -239,9 +243,22 @@ static int signal_fd(void)
 	return signalfd(-1, &mask, SFD_CLOEXEC);
 }
 
+static void log_counts(const struct hub *hub, const struct report *r, bool final)
+{
+	static const char *const health[] = { [H_BLIND] = "BLIND", [H_DEG] = "DEG", [H_OK] = "OK" };
+
+	log_msg(LOG_I, "counts n=%" PRIu32 " radar=%" PRIu64 " radar_left=%" PRIu64 " sonar=%" PRIu64
+		" rejected=%" PRIu64 " store_fwd=%" PRIu64 " store_dropped=%" PRIu64 " health=%s%s",
+		r->n, hub->rx[SENSOR_RADAR], hub->rx[SENSOR_RADAR_LEFT], hub->rx[SENSOR_SONAR],
+		hub->rejected, hub->store_fwd, hub->store_dropped, health[health_state(&hub->h)],
+		final ? " final=1" : "");
+}
+
 int main(void)
 {
 	struct hub hub;
+	struct report rep;
+	bool rep_ok = false;
 	struct hb hb;
 	struct pollfd pfd[3 + MAX_CLIENTS];
 	int slot[3 + MAX_CLIENTS];
@@ -291,6 +308,13 @@ int main(void)
 		log_msg(LOG_E, "clock_failed err=%s", strerror(errno));
 		goto out;
 	}
+	if (report_init(&rep, now) < 0) {
+		log_msg(LOG_E, "bad_config %s=%s want=1..%d", REPORT_ENV, getenv(REPORT_ENV),
+			REPORT_MAX_S);
+		rc = EX_CONFIG;
+		goto out;
+	}
+	rep_ok = true;
 	next_stats = now + STATS_NS;
 	log_msg(LOG_I, "start sock=%s", path);
 	send_state(&hub, now);	/* BLIND */
@@ -351,6 +375,8 @@ int main(void)
 				hub.rx[SENSOR_SONAR], hub.rejected);
 			next_stats = now + STATS_NS;
 		}
+		if (report_due(&rep, now))
+			log_counts(&hub, &rep, false);
 	}
 
 out:
@@ -362,6 +388,10 @@ out:
 	if (sfd >= 0 && close(sfd) < 0)
 		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
 	ipc_conn_close(&hub.store);
+	if (rep_ok) {
+		report_final(&rep);
+		log_counts(&hub, &rep, true);
+	}
 	log_msg(LOG_I, "store_link forwarded=%" PRIu64 " dropped=%" PRIu64, hub.store_fwd,
 		hub.store_dropped);
 	log_msg(rc == EX_OK ? LOG_I : LOG_E, "exit code=%d radar=%" PRIu64 " radar_left=%" PRIu64

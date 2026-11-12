@@ -3,20 +3,24 @@
  * nice +5 set by dlby-super. Heartbeats to dlby-super from the main loop
  * (hb.h); standalone when not supervised.
  *
+ * Event counts every $DLBY_REPORT_S and a final=1 line on exit (report.h).
+ *
  * Exit codes: 0 on SIGTERM/SIGINT or when dlby-super is gone, 69 if the log dir
- * or socket can't be set up, 70 on any other unexpected failure (restart runs
- * recovery).
+ * or socket can't be set up, 78 on a bad setting, 70 on any other unexpected
+ * failure (restart runs recovery).
  */
 #include "hb.h"
 #include "ipc.h"
 #include "log.h"
 #include "msg.h"
+#include "report.h"
 #include "seglog.h"
 
 #include <errno.h>
 #include <inttypes.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/signalfd.h>
 #include <sysexits.h>
@@ -126,14 +130,17 @@ static int read_client(struct store *st, int i, int64_t now)
 	return 0;
 }
 
-/* Idle at most until the next timed sync or heartbeat is due, never more than
- * MAX_IDLE_MS. */
-static int poll_timeout_ms(const struct seglog *sl, const struct hb *hb, int64_t now)
+/* Idle at most until the next timed sync, heartbeat or report is due, never
+ * more than MAX_IDLE_MS. */
+static int poll_timeout_ms(const struct seglog *sl, const struct hb *hb, const struct report *rep,
+			   int64_t now)
 {
 	int64_t due = seglog_sync_due_ns(sl), ms;
 
 	if (hb_due_ns(hb) < due)
 		due = hb_due_ns(hb);
+	if (rep->next_ns < due)
+		due = rep->next_ns;
 
 	if (due == INT64_MAX)
 		return MAX_IDLE_MS;
@@ -141,9 +148,21 @@ static int poll_timeout_ms(const struct seglog *sl, const struct hb *hb, int64_t
 	return ms < 0 ? 0 : ms > MAX_IDLE_MS ? MAX_IDLE_MS : (int)ms;
 }
 
+static void log_counts(const struct store *st, const struct report *r, bool final)
+{
+	log_msg(LOG_I, "counts n=%" PRIu32 " records=%" PRIu64 " bytes=%" PRIu64 " segment=%s"
+		" next_seq=%" PRIu32 " syncs_timed=%" PRIu64 " syncs_state=%" PRIu64
+		" refused=%" PRIu64 " rejected=%" PRIu64 " state_only=%d%s", r->n, st->sl.records,
+		st->sl.total_bytes, st->sl.seg_name, st->sl.next_seq, st->sl.syncs_timed,
+		st->sl.syncs_state, st->sl.refused, st->rejected, st->sl.state_only,
+		final ? " final=1" : "");
+}
+
 int main(void)
 {
 	struct store st;
+	struct report rep = { .next_ns = INT64_MAX };
+	bool rep_ok = false;
 	struct hb hb;
 	struct seglog_cfg cfg;
 	struct pollfd pfd[3 + MAX_CLIENTS];
@@ -174,6 +193,12 @@ int main(void)
 		log_msg(LOG_E, "clock_failed err=%s", strerror(errno));
 		goto out;
 	}
+	if (report_init(&rep, now) < 0) {
+		log_msg(LOG_E, "bad_config %s=%s want=1..%d", REPORT_ENV, getenv(REPORT_ENV),
+			REPORT_MAX_S);
+		rc = EX_CONFIG;
+		goto out;
+	}
 	seglog_default_cfg(&cfg);
 	if (seglog_open(&st.sl, &cfg, now) < 0) {
 		log_msg(LOG_E, "log_open_failed dir=%s err=%s", cfg.dir, strerror(errno));
@@ -181,6 +206,7 @@ int main(void)
 		goto out;
 	}
 	sl_open = true;
+	rep_ok = true;		/* counts read the open log */
 	lfd = ipc_listen("store");
 	if (lfd < 0) {
 		log_msg(LOG_E, "listen_failed err=%s", strerror(errno));
@@ -202,7 +228,7 @@ int main(void)
 			}
 		}
 
-		n = poll(pfd, (nfds_t)nfds, poll_timeout_ms(&st.sl, &hb, now));
+		n = poll(pfd, (nfds_t)nfds, poll_timeout_ms(&st.sl, &hb, &rep, now));
 		if (n < 0 && errno != EINTR) {
 			log_msg(LOG_E, "poll_failed err=%s", strerror(errno));
 			goto out;
@@ -245,6 +271,8 @@ int main(void)
 			rc = EX_OK;
 			goto out;
 		}
+		if (report_due(&rep, now))
+			log_counts(&st, &rep, false);
 	}
 
 out:
@@ -258,6 +286,10 @@ out:
 	if (sl_open && seglog_close(&st.sl) < 0) {
 		log_msg(LOG_E, "close_log_failed err=%s", strerror(errno));
 		rc = EX_SOFTWARE;
+	}
+	if (rep_ok) {		/* after the last sync, so the counts are final */
+		report_final(&rep);
+		log_counts(&st, &rep, true);
 	}
 	log_msg(rc == EX_OK ? LOG_I : LOG_E,
 		"exit code=%d records=%" PRIu64 " syncs_timed=%" PRIu64 " syncs_state=%" PRIu64, rc,

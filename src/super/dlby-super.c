@@ -9,6 +9,12 @@
  * - Shutdown: SIGTERM to every child but store (reverse start order); store last,
  *   once the rest have exited or the grace ran out, so it records everything the
  *   hub sent. SIGKILL for anything still alive after its grace.
+ * - Soak report every $DLBY_REPORT_S (report.h): one system line, then one line
+ *   per child and for super itself (liveness, restarts, RSS, CPU, open fds). A
+ *   final one when shutdown begins, and report_end before the exit line.
+ *
+ * The start line carries the wall-clock time and the build's git version, so a
+ * soak log shows when it started and which build ran.
  *
  * $DLBY_BIN_DIR (default /opt/dlby/bin) holds the child binaries; $DLBY_CHILDREN
  * (comma list) limits which are run, keeping the DESIGN order. A missing binary
@@ -23,7 +29,10 @@
 #include "log.h"
 #include "msg.h"
 #include "notify.h"
+#include "procstat.h"
+#include "report.h"
 #include "supervise.h"
+#include "version.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -40,6 +49,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <sysexits.h>
+#include <time.h>
 #include <unistd.h>
 
 #define BIN_DIR_DEFAULT "/opt/dlby/bin"
@@ -73,6 +83,7 @@ struct child {
 	struct child_sm sm;
 	pid_t pid;		/* -1 when not running */
 	int   hb_fd;		/* super's end; -1 when closed */
+	uint32_t starts;	/* successful starts; restarts = starts - 1 */
 	char  path[PATH_MAX];
 	struct log_limit lim_bad;
 };
@@ -231,6 +242,7 @@ static void start_child(struct child *c, int64_t now)
 		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
 	c->pid = pid;
 	c->hb_fd = sv[0];
+	c->starts++;
 	sup_on_start(&c->sm, now);
 	log_msg(LOG_I, "child_start name=%s pid=%ld", c->def->name, (long)pid);
 	return;
@@ -407,6 +419,156 @@ static void notify(const char *msg, struct log_limit *lim, int64_t now)
 		log_limited(lim, now, LOG_W, "notify_failed msg=%s err=%s", msg, strerror(errno));
 }
 
+/* Soak report state (report.h). */
+struct sysrep {
+	struct report r;
+	int64_t  start_ns;
+	long     clk_tck;
+	bool     have_prev;
+	uint64_t prev_total, prev_busy;
+};
+
+static const char *state_name(enum child_state s)
+{
+	switch (s) {
+	case CH_IDLE:         return "idle";
+	case CH_RUNNING:      return "running";
+	case CH_TERMINATING:  return "terminating";
+	case CH_KILLING:      return "killing";
+	case CH_WAIT_RESTART: return "wait_restart";
+	case CH_DISABLED:     return "disabled";
+	case CH_STOPPED:      return "stopped";
+	}
+	return "unknown";
+}
+
+/* Remember the first failure of a report as " err=<what>:<why>" for its line. */
+static void note_err(char *err, size_t cap, const char *what)
+{
+	if (!err[0])
+		snprintf(err, cap, " err=%s:%s", what, strerror(errno));
+}
+
+/* One process's RSS, CPU seconds and open fds; -1 for any that can't be read. */
+static void read_proc(const char *dir, pid_t pid, long clk_tck, long *rss_kb, double *cpu_s,
+		      int *fds, char *err, size_t cap)
+{
+	char path[64], buf[PROCSTAT_BUF];
+	uint64_t ticks;
+
+	*rss_kb = -1;
+	*cpu_s = -1;
+	snprintf(path, sizeof(path), "%s/status", dir);
+	if (procstat_read(path, buf, sizeof(buf)) < 0 || procstat_rss_kb(buf, rss_kb) < 0) {
+		*rss_kb = -1;
+		note_err(err, cap, "status");
+	}
+	snprintf(path, sizeof(path), "%s/stat", dir);
+	if (procstat_read(path, buf, sizeof(buf)) < 0 || procstat_cpu_ticks(buf, &ticks) < 0)
+		note_err(err, cap, "stat");
+	else
+		*cpu_s = (double)ticks / (double)clk_tck;
+	*fds = procstat_count_fds(pid);
+	if (*fds < 0)
+		note_err(err, cap, "fd");
+}
+
+static void report_system(struct sysrep *sr, int64_t now, bool final)
+{
+	char buf[PROCSTAT_BUF], err[96] = "";
+	uint64_t total, idle, busy;
+	double cpu_pct = -1, load1 = -1;
+	long avail = -1, temp = -1;
+	char *end;
+
+	if (procstat_read("/proc/stat", buf, sizeof(buf)) < 0 ||
+	    procstat_sys_cpu(buf, &total, &idle) < 0) {
+		note_err(err, sizeof(err), "/proc/stat");
+	} else {
+		/* iowait can step backwards, so busy is clamped, never negative. */
+		busy = total > idle ? total - idle : 0;
+		if (sr->have_prev && total > sr->prev_total)
+			cpu_pct = busy > sr->prev_busy ?
+				  100.0 * (double)(busy - sr->prev_busy) /
+				  (double)(total - sr->prev_total) : 0.0;
+		sr->prev_total = total;
+		sr->prev_busy = busy;
+		sr->have_prev = true;
+	}
+	if (procstat_read("/proc/loadavg", buf, sizeof(buf)) < 0 || procstat_load1(buf, &load1) < 0)
+		note_err(err, sizeof(err), "/proc/loadavg");
+	if (procstat_read("/proc/meminfo", buf, sizeof(buf)) < 0 ||
+	    procstat_mem_avail_kb(buf, &avail) < 0)
+		note_err(err, sizeof(err), "/proc/meminfo");
+	/* No thermal zone (a container) is normal: temp_mc=-1, not an error. */
+	if (procstat_read("/sys/class/thermal/thermal_zone0/temp", buf, sizeof(buf)) >= 0) {
+		errno = 0;
+		temp = strtol(buf, &end, 10);
+		if (errno || end == buf) {
+			temp = -1;
+			errno = EINVAL;
+			note_err(err, sizeof(err), "thermal");
+		}
+	} else if (errno != ENOENT) {
+		note_err(err, sizeof(err), "thermal");
+	}
+	log_msg(LOG_I, "report n=%" PRIu32 " uptime_s=%" PRId64 " cpu_pct=%.1f load1=%.2f"
+		" mem_avail_kb=%ld temp_mc=%ld%s%s", sr->r.n, (now - sr->start_ns) / 1000000000,
+		cpu_pct, load1, avail, temp, final ? " final=1" : "", err);
+}
+
+static void report_all(struct sysrep *sr, int64_t now, bool final)
+{
+	const char *fin = final ? " final=1" : "";
+	char err[96];
+	long rss;
+	double cpu;
+	int fds;
+	size_t i;
+	struct child *c;
+
+	report_system(sr, now, final);
+
+	err[0] = '\0';
+	read_proc("/proc/self", getpid(), sr->clk_tck, &rss, &cpu, &fds, err, sizeof(err));
+	if (fds > 0)
+		fds--;		/* the directory being counted */
+	log_msg(LOG_I, "report_child n=%" PRIu32 " name=dlby-super pid=%ld up=1 state=running"
+		" restarts=0 rss_kb=%ld cpu_s=%.2f fds=%d%s%s", sr->r.n, (long)getpid(), rss, cpu,
+		fds, fin, err);
+
+	for (i = 0; i < nkids; i++) {
+		char dir[32];
+
+		c = &kids[i];
+		err[0] = '\0';
+		rss = -1;
+		cpu = -1;
+		fds = -1;
+		if (c->pid > 0) {
+			snprintf(dir, sizeof(dir), "/proc/%ld", (long)c->pid);
+			read_proc(dir, c->pid, sr->clk_tck, &rss, &cpu, &fds, err, sizeof(err));
+		}
+		log_msg(LOG_I, "report_child n=%" PRIu32 " name=%s pid=%ld up=%d state=%s restarts=%"
+			PRIu32 " rss_kb=%ld cpu_s=%.2f fds=%d%s%s", sr->r.n, c->def->name, (long)c->pid,
+			c->pid > 0 && c->sm.state == CH_RUNNING && c->sm.got_hb,
+			state_name(c->sm.state), c->starts ? c->starts - 1 : 0, rss, cpu, fds, fin, err);
+	}
+}
+
+/* Wall-clock time as ISO 8601 UTC, or "unknown" (logged) if it can't be read. */
+static void wall_now(char *buf, size_t cap)
+{
+	struct timespec ts;
+	struct tm tm;
+
+	if (clock_gettime(CLOCK_REALTIME, &ts) < 0 || !gmtime_r(&ts.tv_sec, &tm) ||
+	    strftime(buf, cap, "%Y-%m-%dT%H:%M:%SZ", &tm) == 0) {
+		log_msg(LOG_W, "wall_clock_failed err=%s", strerror(errno));
+		snprintf(buf, cap, "unknown");
+	}
+}
+
 static int signal_fd(void)
 {
 	sigset_t mask;
@@ -438,11 +600,13 @@ int main(int argc, char **argv)
 	struct signalfd_siginfo si;
 	struct shutdown sd = { 0 };
 	struct log_limit lim_notify = { 0 };
+	struct sysrep sr = { 0 };
 	const char *bin_dir;
-	char names[128] = "";
+	char names[128] = "", wall[32];
 	int64_t now, next_wd, due, d;
 	bool ready_sent = false;
 	int sfd = -1, rc = EX_SOFTWARE, n;
+	uint32_t restarts;
 	size_t i, nfds;
 	ssize_t r;
 
@@ -472,7 +636,22 @@ int main(int argc, char **argv)
 		log_msg(LOG_E, "clock_failed err=%s", strerror(errno));
 		goto out;
 	}
-	log_msg(LOG_I, "start bin_dir=%s children=%s", bin_dir, names);
+	if (report_init(&sr.r, now) < 0) {
+		log_msg(LOG_E, "bad_config %s=%s want=1..%d", REPORT_ENV, getenv(REPORT_ENV),
+			REPORT_MAX_S);
+		rc = EX_CONFIG;
+		goto out;
+	}
+	sr.start_ns = now;
+	sr.clk_tck = sysconf(_SC_CLK_TCK);
+	if (sr.clk_tck <= 0) {
+		log_msg(LOG_W, "clk_tck_failed err=%s assume=100", strerror(errno));
+		sr.clk_tck = 100;
+	}
+	wall_now(wall, sizeof(wall));
+	log_msg(LOG_I, "start wall=%s version=%s report_s=%" PRId64 " bin_dir=%s children=%s",
+		wall, DLBY_VERSION, sr.r.period_ns / 1000000000, bin_dir, names);
+	report_system(&sr, now, false);	/* CPU baseline; logged as report n=0 */
 	next_wd = now;
 
 	for (;;) {
@@ -497,6 +676,8 @@ int main(int argc, char **argv)
 				notify("READY=1", &lim_notify, now);
 				ready_sent = true;
 			}
+			if (report_due(&sr.r, now))
+				report_all(&sr, now, false);
 		} else if (shutdown_step(&sd, now)) {
 			rc = EX_OK;
 			goto out;
@@ -521,6 +702,8 @@ int main(int argc, char **argv)
 		}
 		if (sd.active && shutdown_due(&sd) < due)
 			due = shutdown_due(&sd);
+		if (!sd.active && sr.r.next_ns < due)
+			due = sr.r.next_ns;
 
 		n = poll(pfd, (nfds_t)nfds, timeout_ms(due, now));
 		if (n < 0 && errno != EINTR) {
@@ -540,6 +723,9 @@ int main(int argc, char **argv)
 						continue;
 					log_msg(LOG_I, "stop signal=%s", sigabbrev_np((int)si.ssi_signo));
 					notify("STOPPING=1", &lim_notify, now);
+					/* While every child can still be read. */
+					report_final(&sr.r);
+					report_all(&sr, now, true);
 					begin_shutdown(&sd, now);
 				}
 				if (r >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
@@ -562,6 +748,13 @@ out:
 		close_hb(&kids[i]);
 	if (sfd >= 0 && close(sfd) < 0)
 		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
+	restarts = 0;
+	for (i = 0; i < nkids; i++)
+		restarts += kids[i].starts ? kids[i].starts - 1 : 0;
+	now = dlby_now_ns();
+	if (sr.start_ns)	/* only once the start line was logged */
+		log_msg(LOG_I, "report_end reports=%" PRIu32 " uptime_s=%" PRId64 " restarts=%"
+			PRIu32, sr.r.n, now >= 0 ? (now - sr.start_ns) / 1000000000 : -1, restarts);
 	log_msg(rc == EX_OK ? LOG_I : LOG_E, "exit code=%d", rc);
 	return rc;
 }

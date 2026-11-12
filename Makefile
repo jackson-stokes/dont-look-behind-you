@@ -45,7 +45,11 @@ TESTS    := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%)
 PREFIX     ?= /opt/dlby
 REMOTE_DIR ?= dlby-src
 
-.PHONY: all test asan check-boundary run-tests clean install deploy
+# The build's git version, logged in dlby-super's start line. `make deploy` passes
+# it on, since the Pi's copy has no .git.
+VERSION ?= $(shell git -c safe.directory='*' describe --always --dirty 2>/dev/null || echo unknown)
+
+.PHONY: all test asan check-boundary run-tests clean install deploy FORCE
 
 all: $(LIB) $(BINS) $(TESTS)
 
@@ -79,12 +83,19 @@ $(STORE_LIB): $(BUILD)/obj/store/record.o $(BUILD)/obj/store/seglog.o
 $(BUILD)/store: $(BUILD)/obj/store/store.o $(STORE_LIB) $(LIB)
 	$(CC) $(ALL_CFLAGS) -o $@ $^
 
-$(BUILD)/obj/super/%.o: src/super/%.c $(SUPER_HDR) $(COMMON_HDR)
+# Rewritten only when the version changes, so it rebuilds dlby-super only then.
+$(BUILD)/version.h: FORCE
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) -Isrc/super $(ALL_CFLAGS) -c -o $@ $<
+	@echo '#define DLBY_VERSION "$(VERSION)"' > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
+
+$(BUILD)/obj/super/%.o: src/super/%.c $(SUPER_HDR) $(COMMON_HDR) $(BUILD)/version.h
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -Isrc/super -I$(BUILD) $(ALL_CFLAGS) -c -o $@ $<
 
 # dlby-super's testable parts (everything but main), linked into the unit tests.
-$(SUPER_LIB): $(BUILD)/obj/super/supervise.o $(BUILD)/obj/super/notify.o
+$(SUPER_LIB): $(BUILD)/obj/super/supervise.o $(BUILD)/obj/super/notify.o \
+	$(BUILD)/obj/super/procstat.o
 	$(AR) rcs $@ $^
 
 $(BUILD)/dlby-super: $(BUILD)/obj/super/dlby-super.o $(SUPER_LIB) $(LIB)
@@ -119,6 +130,7 @@ run-tests: $(TESTS) $(BINS)
 	@echo "== tests/store_e2e.sh"; sh tests/store_e2e.sh $(BUILD)
 	@echo "== tests/super_e2e.sh"; sh tests/super_e2e.sh $(BUILD)
 	@echo "== tests/capture_e2e.sh"; sh tests/capture_e2e.sh $(BUILD)
+	@echo "== tests/report_e2e.sh"; sh tests/report_e2e.sh $(BUILD)
 	@echo "all tests passed ($(BUILD))"
 
 test: check-boundary run-tests
@@ -151,7 +163,8 @@ install: $(PRODUCT)
 deploy:
 	@test -n "$(PI)" || { echo "usage: make deploy PI=pi@<host>"; exit 64; }
 	rsync -a --delete --exclude build --exclude .git --exclude .idea ./ $(PI):$(REMOTE_DIR)/
-	ssh $(PI) 'set -e; cd $(REMOTE_DIR); make; sudo make install; \
+	ssh $(PI) 'set -e; cd $(REMOTE_DIR); make VERSION=$(VERSION); \
+		sudo make install VERSION=$(VERSION); \
 		sudo systemd-analyze verify /etc/systemd/system/dlby.service; \
 		sudo systemctl daemon-reexec; sudo systemctl restart systemd-journald; \
 		sudo systemctl enable dlby; sudo systemctl restart dlby; \
