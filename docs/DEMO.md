@@ -206,7 +206,7 @@ build/tools/dlby-logcat ~/dlby-demo/log
 ```
 Hold the frame on a line like:
 ```
-segments=1 records=… radar=… sonar=… alert=… gap_msg=… gap_dropped=… store_gap=… other=0 bad=0 first_seq=1 last_seq=… contiguous=1
+segments=1 records=… radar=… radar_left=… radar_targets=… sonar=… alert=… gap_msg=… gap_dropped=… store_gap=… other=0 bad=0 first_seq=1 last_seq=… contiguous=1
 ```
 `bad=0` means no damaged records were kept. `contiguous=1` means the sequence numbers have
 no holes across restarts. Stop the recording.

@@ -4,10 +4,10 @@ Status as of 2026-10-12. Feeds the M2 design document.
 
 ## Direction
 - **Platform:** car-mounted. The bike was too tight for size and power, and the handout (§2) requires a Raspberry Pi, so the product runs on the **Pi 5**. The ESP32 is a bench tool only.
-- **Moment:** while driving, a cyclist comes up in the right-side blind spot just before a right turn (the "right-hook").
+- **Moment:** while driving, a cyclist comes up in a blind spot on either side just before a turn or lane change (the classic case is the "right-hook").
 - **Sensors (fused, §3.1):**
-  - **HLK-LD2451 24GHz radar** (UART, ~10Hz): rearward along the right side; range, speed and approach direction at roughly 5–50m+.
-  - **HC-SR04 ultrasonic** (trigger/echo, 16Hz: needs ≥60ms between pings): sideways out of the right rear quarter; confirms something is in the 0.2–4m blind-spot zone.
+  - **Two HLK-LD2451 24GHz radars** (UART, ~10Hz): one rearward along each side; range, speed and approach direction at roughly 5–50m+.
+  - **One HC-SR04 ultrasonic** (trigger/echo, 16Hz: needs ≥60ms between pings): sideways, beside the right radar; confirms something is in the 0.2–4m blind-spot zone on that side. The left side is radar only.
   - **Fusion:** a state machine hands off between the two range bands, CLEAR → APPROACHING (radar) → IN_ZONE (ultrasonic, consistent with the radar's last track) → CLEAR. With both healthy, radar alone can warn (APPROACHING) but IN_ZONE needs ultrasonic confirmation; if one is lost, the survivor warns in a degraded pattern.
 - **Mechanisms (§3.2):**
   - **C (SCHED_FIFO):** bounds alert latency across capture → fusion → alert under load. Range accuracy doesn't need it, because echo edges are kernel-timestamped (see DESIGN.md §2).
@@ -35,12 +35,12 @@ Status as of 2026-10-12. Feeds the M2 design document.
 | Active buzzer, 2N2222 | Audible driver alert (check the Temu kit first) | 0–5 |
 
 ## Physical layout (car)
-- **Sensor pod**, outside on the right rear quarter:
-  - Radar faces rearward, angled 10–20° outward.
-  - Ultrasonic faces straight out sideways at about a cyclist's hip height.
+- **Sensor pods**, outside on each rear quarter:
+  - Each radar faces rearward, angled 10–20° outward.
+  - The ultrasonic, in the right pod, faces straight out sideways at about a cyclist's hip height.
   - Neither sensor works through glass.
-- **Cable** (~1.5–2m) through the rear door seal to the **Pi 5 on the rear seat or floor**.
-- **Alert:** LED on the dash or right A-pillar, plus a buzzer.
+- **Cables** from both pods to the **Pi 5 in the rear of the car**.
+- **Alert:** LEDs on the side mirrors, like a factory blind-spot light, plus a buzzer.
 - **Power:** a USB-C car charger. At 3A the Pi 5 caps current to its USB ports, which doesn't matter for header-wired sensors.
 
 ## Pi 5 pin map (draft; verify before wiring, power off)

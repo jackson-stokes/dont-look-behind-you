@@ -5,6 +5,7 @@
  *
  * Prints one key=value line. bad= counts bytes after the last valid record of
  * any segment; contiguous=1 means seq rises by exactly 1 across all segments.
+ * radar_targets= counts radar records (either side) with at least one target.
  * Exit: 0 if bad=0 and contiguous=1, 1 otherwise, 70 on I/O errors.
  */
 #include "msg.h"
@@ -22,7 +23,8 @@
 #include <unistd.h>
 
 struct summary {
-	uint64_t records, radar, radar_left, sonar, alert, gap_msg, gap_dropped, store_gap, other;
+	uint64_t records, radar, radar_left, radar_targets, sonar, alert, gap_msg, gap_dropped,
+		 store_gap, other;
 	uint64_t bad;
 	uint32_t first_seq, last_seq;
 	bool     any, contiguous;
@@ -48,6 +50,8 @@ static int count_cb(void *ctx, const struct rec *r, const uint8_t *payload)
 			s->radar_left++;
 		else
 			s->radar++;
+		if (r->len > 1 && payload[1] > 0)	/* radar_msg.ntargets */
+			s->radar_targets++;
 		break;
 	case MSG_SONAR: s->sonar++; break;
 	case MSG_ALERT: s->alert++; break;
@@ -106,10 +110,10 @@ int main(int argc, char **argv)
 	free(v);
 
 	printf("segments=%zu records=%" PRIu64 " radar=%" PRIu64 " radar_left=%" PRIu64
-	       " sonar=%" PRIu64 " alert=%" PRIu64
+	       " radar_targets=%" PRIu64 " sonar=%" PRIu64 " alert=%" PRIu64
 	       " gap_msg=%" PRIu64 " gap_dropped=%" PRIu64 " store_gap=%" PRIu64 " other=%" PRIu64
 	       " bad=%" PRIu64 " first_seq=%" PRIu32 " last_seq=%" PRIu32 " contiguous=%d\n",
-	       n, s.records, s.radar, s.radar_left, s.sonar, s.alert, s.gap_msg, s.gap_dropped, s.store_gap,
-	       s.other, s.bad, s.first_seq, s.last_seq, s.contiguous ? 1 : 0);
+	       n, s.records, s.radar, s.radar_left, s.radar_targets, s.sonar, s.alert, s.gap_msg,
+	       s.gap_dropped, s.store_gap, s.other, s.bad, s.first_seq, s.last_seq, s.contiguous ? 1 : 0);
 	return (s.bad == 0 && s.contiguous) ? 0 : 1;
 }

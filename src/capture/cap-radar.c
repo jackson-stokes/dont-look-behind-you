@@ -8,10 +8,11 @@
  *   $DLBY_RADAR_DEV       right radar (default /dev/ttyAMA2: UART2, GPIO 4/5)
  *   $DLBY_RADAR_LEFT_DEV  left radar (default /dev/ttyAMA4: UART4, GPIO 12/13)
  *
- * Every message has ntargets=0 until a real target capture verifies the
- * LD2451 target layout; frames with a payload are counted and logged in hex
- * (rate limited) so they can be decoded. origin_ns is the user-space read time
- * of the frame's last byte.
+ * Target payloads are decoded by ld2451.c (layout from a Pi capture,
+ * docs/evidence/radar-targets-pi.txt). A payload that doesn't decode is still
+ * sent, with ntargets=0, so the hub keeps the radar alive; it is counted and
+ * logged in hex (rate limited). origin_ns is the user-space read time of the
+ * frame's last byte.
  *
  * Exit codes: 0 on SIGTERM/SIGINT or when dlby-super is gone, 78 if the device
  * is missing or not a tty (restarting won't fix it), 69 if it errors or hangs
@@ -20,6 +21,7 @@
 #include "hb.h"
 #include "health.h"
 #include "ipc.h"
+#include "ld2451.h"
 #include "log.h"
 #include "msg.h"
 #include "radar_parse.h"
@@ -46,10 +48,10 @@ struct radar {
 	struct radar_parser p;
 	struct ipc_conn hub;
 	uint32_t seq;
-	uint64_t sent, target_frames;
+	uint64_t sent, target_frames, bad_payload;
 	int64_t last_frame_ns;	/* -1 before the first frame */
 	bool silent;
-	struct log_limit lim_len, lim_tail, lim_target, lim_send;
+	struct log_limit lim_len, lim_tail, lim_target, lim_payload, lim_send;
 };
 
 /* Raw 115200 8N1, no flow control, reads never block. */
@@ -71,7 +73,7 @@ static int tty_setup(int fd)
 	return tcflush(fd, TCIFLUSH);	/* drop any half frame from before we started */
 }
 
-static void log_target_frame(struct radar *r, int64_t now)
+static void log_bad_payload(struct radar *r, int64_t now)
 {
 	char hex[2 * RADAR_FRAME_MAX + 1];
 	size_t i, total = RADAR_FRAME_OVERHEAD + r->p.len;
@@ -83,7 +85,7 @@ static void log_target_frame(struct radar *r, int64_t now)
 		hex[2 * i + 1] = digits[r->p.buf[i] & 0xf];
 	}
 	hex[2 * total] = '\0';
-	log_limited(&r->lim_target, now, LOG_I, "target_frame len=%zu hex=%s", r->p.len, hex);
+	log_limited(&r->lim_payload, now, LOG_W, "bad_payload len=%zu hex=%s", r->p.len, hex);
 }
 
 static void on_frame(struct radar *r, int64_t now)
@@ -97,14 +99,20 @@ static void on_frame(struct radar *r, int64_t now)
 	r->silent = false;
 	r->last_frame_ns = now;
 
+	memset(&m, 0, sizeof(m));
 	if (r->p.len > 0) {
-		r->target_frames++;
-		log_target_frame(r, now);
+		if (ld2451_decode(r->p.buf + 6, r->p.len, &m) < 0) {
+			r->bad_payload++;
+			log_bad_payload(r, now);
+		} else if (m.ntargets > 0) {
+			r->target_frames++;
+			log_limited(&r->lim_target, now, LOG_I, "target n=%u range_cm=%u speed_cms=%d angle_deg=%d",
+				    (unsigned)m.ntargets, (unsigned)m.t[0].range_cm, (int)m.t[0].speed_cms,
+				    (int)m.t[0].angle_deg);
+		}
 	}
 
-	memset(&m, 0, sizeof(m));
 	m.type = MSG_RADAR;
-	m.ntargets = 0;		/* target layout unverified: see the header comment */
 	m.side = r->side;
 	m.seq = r->seq++;
 	m.origin_ns = (uint64_t)now;
@@ -271,7 +279,8 @@ out:
 		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
 	ipc_conn_close(&r.hub);
 	log_msg(rc == EX_OK ? LOG_I : LOG_E, "exit code=%d frames=%" PRIu64 " target_frames=%" PRIu64
-		" bad_len=%" PRIu64 " bad_tail=%" PRIu64 " sent=%" PRIu64 " dropped=%" PRIu64,
-		rc, r.p.frames, r.target_frames, r.p.bad_len, r.p.bad_tail, r.sent, r.hub.dropped);
+		" bad_payload=%" PRIu64 " bad_len=%" PRIu64 " bad_tail=%" PRIu64 " sent=%" PRIu64
+		" dropped=%" PRIu64, rc, r.p.frames, r.target_frames, r.bad_payload, r.p.bad_len,
+		r.p.bad_tail, r.sent, r.hub.dropped);
 	return rc;
 }
