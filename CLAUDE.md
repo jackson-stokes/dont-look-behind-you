@@ -1,10 +1,10 @@
 # Don't Look Behind You: team rules
 
 ## Context
-A car-mounted device that warns a driver of a cyclist in the right-side blind
-spot before a right turn (the "right-hook"), fusing a rearward radar and a
-sideways ultrasonic sensor under a supervisor that survives any child process
-dying. Latency and on-device autonomy are
+A car-mounted device that warns a driver of a cyclist coming up in either
+blind spot before a turn or lane change, fusing a rearward radar on each side
+of the car with a sideways ultrasonic sensor under a supervisor that survives
+any child process dying. Latency and on-device autonomy are
 graded properties, not preferences — see Hard constraints below. Background
 and design rationale: PROBLEM.md. No implementation exists yet (no Makefile,
 no src/ tree); the Commands and Ownership sections below describe the target

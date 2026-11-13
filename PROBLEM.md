@@ -3,12 +3,12 @@
 ## The user 
 A person or place, named or nameable. Who will this sit next to? 
 
-A driver in Fort Collins. The device mounts on the car: a sensor pod outside on the right rear quarter, cabled through the door seal to a Raspberry Pi 5 inside the cabin, with an alert LED on the dash or right A-pillar.
+A driver in Fort Collins. The device mounts on the car: a sensor pod outside on each rear quarter, cabled to a Raspberry Pi 5 inside the car, with alert LEDs on the side mirrors like a factory blind-spot light.
 
 ## The problem 
 What goes wrong, how often, and what it costs (money, worry, ruined batches, missed warnings). Observable, not hypothetical. 
 
-A driver turning right doesn't see a cyclist coming up in the right-side blind spot and turns across them (the "right-hook"). In Fort Collins, cyclists get hit by cars this way, costing hospital bills, legal fees, and insurance claims. Factory blind-spot monitoring is missing on older cars and is tuned to detect cars, not cyclists.
+A driver turning or changing lanes doesn't see a cyclist coming up in a blind spot and turns across them. The classic case is the "right-hook" (a right turn across a cyclist on the right); the left side has the same blind spot when the driver moves left across a cyclist. In Fort Collins, cyclists get hit by cars this way, costing hospital bills, legal fees, and insurance claims. Factory blind-spot monitoring is missing on older cars and is tuned to detect cars, not cyclists.
 
 ## Why a device 
 The 3 a.m. test: why must something be physically present and always awake? Why doesn't a phone app already solve this? 
@@ -18,10 +18,10 @@ The sensors must be physically mounted outside the car, aimed at the blind spot,
 ## The sensors 
 Which two (or more), and how they COOPERATE (fused, correlated, or one pipeline) rather than merely coexist. 
 
-- HLK-LD2451 24GHz radar (UART, ~10Hz), facing rearward along the right side: range, speed, and approach direction at roughly 5-50m.
-- HC-SR04 ultrasonic (~16Hz; JSN-SR04T for the outdoor build), facing sideways: confirms something is in the 0.2-4m blind-spot zone.
+- Two HLK-LD2451 24GHz radars (UART, ~10Hz), one facing rearward along each side of the car: range, speed, and approach direction at roughly 5-50m.
+- One HC-SR04 ultrasonic (~16Hz; JSN-SR04T for the outdoor build), facing sideways beside the right radar: confirms something is in the 0.2-4m blind-spot zone on that side.
 
-They are fused by a state machine that hands off between the two range bands: CLEAR -> APPROACHING (radar sees an approaching target) -> IN_ZONE (ultrasonic detects something consistent with the radar's last track) -> CLEAR. With both healthy, radar alone can warn (APPROACHING) but IN_ZONE needs ultrasonic confirmation; if one is lost, the survivor warns in a degraded pattern.
+They are fused by a state machine that hands off between the two range bands: CLEAR -> APPROACHING (radar sees an approaching target) -> IN_ZONE (ultrasonic detects something consistent with the radar's last track) -> CLEAR. With both healthy, radar alone can warn (APPROACHING) but IN_ZONE needs ultrasonic confirmation; if one is lost, the survivor warns in a degraded pattern. The side without an ultrasonic gets the radar's APPROACHING warning only.
 
 ## The mechanisms 
 First guess at two items from the Section 3.2 menu, one sentence of justification each. Allowed to change by the design doc. 
