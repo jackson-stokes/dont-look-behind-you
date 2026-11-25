@@ -3,8 +3,9 @@
 #
 # Two fake-ld2451 ptys -> real cap-radar and cap-radar-left (the same binary
 # under its second name) -> fuse-hub -> store for ~2 s, with junk, bad tails, bad
-# lengths, a payload frame and a split frame on the wire; then SIGTERM both
-# (exit 0) and verify the log with dlby-logcat, right and left counted apart.
+# lengths, an undecodable payload, a real target frame and a split frame on the
+# wire; then SIGTERM both (exit 0) and verify the log with dlby-logcat, right and
+# left counted apart, and every decoded target frame stored with its target.
 # Also: cap-radar, cap-radar-left and cap-sonar exit 78 when their device is missing.
 set -u
 B=$(cd "$1" && pwd) || exit 1	# absolute: the cap-radar-left symlink lives in $T
@@ -132,8 +133,11 @@ grep -q -E '^cap-radar\[[0-9]+\] W bad_frame reason=tail count=1$' "$T/radar.log
 	fail "no bad_frame reason=tail"
 grep -q -E '^cap-radar\[[0-9]+\] W bad_frame reason=len count=1$' "$T/radar.log" ||
 	fail "no bad_frame reason=len"
-grep -q -E '^cap-radar\[[0-9]+\] I target_frame len=4 hex=f4f3f2f1040001020304f8f7f6f5 count=1$' \
-	"$T/radar.log" || fail "no target_frame hex line"
+grep -q -E '^cap-radar\[[0-9]+\] W bad_payload len=4 hex=f4f3f2f1040001020304f8f7f6f5 count=1$' \
+	"$T/radar.log" || fail "no bad_payload hex line"
+# fake-ld2451's real frame: 9 m, 4 km/h approaching, +2 deg.
+grep -q -E '^cap-radar\[[0-9]+\] I target n=1 range_cm=900 speed_cms=-111 angle_deg=2 count=1$' \
+	"$T/radar.log" || fail "no decoded target line"
 grep -q -E '^cap-radar\[[0-9]+\] W radar_silent' "$T/radar.log" && fail "radar_silent while frames flowed"
 grep -q -E '^fuse-hub\[[0-9]+\] I sensor_up name=radar$' "$T/hub.log" || fail "hub never saw the radar"
 grep -q -E '^fuse-hub\[[0-9]+\] I sensor_up name=radar_left$' "$T/hub.log" ||
@@ -145,14 +149,18 @@ bad=$(grep -v -E '^cap-radar-left\[[0-9]+\] [IWE] [a-z_]+( [a-z_]+=[^ ]*)*$' "$T
 ex_l=$(grep -E '^cap-radar-left\[[0-9]+\] I exit code=0 ' "$T/left.log")
 [ -n "$ex_l" ] || fail "no clean exit line from cap-radar-left"
 sent_l=$(field sent "$ex_l")
+tf_l=$(field target_frames "$ex_l")
 [ "$(field frames "$ex_l")" -ge 8 ] || fail "too few left frames: $ex_l"
+[ "$tf_l" -ge 1 ] || fail "no left target frames decoded: $ex_l"
 
 ex=$(grep -E '^cap-radar\[[0-9]+\] I exit code=0 ' "$T/radar.log")
 [ -n "$ex" ] || fail "no clean exit line"
 frames=$(field frames "$ex")
 sent=$(field sent "$ex")
 [ "$frames" -ge 8 ] || fail "too few frames: $ex"
-[ "$(field target_frames "$ex")" -ge 1 ] || fail "no target frames counted: $ex"
+tf=$(field target_frames "$ex")
+[ "$tf" -ge 1 ] || fail "no target frames decoded: $ex"
+[ "$(field bad_payload "$ex")" -ge 1 ] || fail "no bad payloads counted: $ex"
 [ "$(field bad_tail "$ex")" -ge 1 ] || fail "no bad tails counted: $ex"
 [ "$(field bad_len "$ex")" -ge 1 ] || fail "no bad lengths counted: $ex"
 [ "$sent" -eq "$frames" ] || fail "sent != frames: $ex"
@@ -163,5 +171,7 @@ sum=$("$B/tools/dlby-logcat" "$DLBY_LOG_DIR") || fail "dlby-logcat: $sum"
 [ "$(field radar "$sum")" -eq "$sent" ] || fail "store has $(field radar "$sum") radar records, cap-radar sent $sent"
 [ "$(field radar_left "$sum")" -eq "$sent_l" ] ||
 	fail "store has $(field radar_left "$sum") left radar records, cap-radar-left sent $sent_l"
+[ "$(field radar_targets "$sum")" -eq $((tf + tf_l)) ] ||
+	fail "store has $(field radar_targets "$sum") radar records with targets, capture decoded $((tf + tf_l))"
 
-echo "capture_e2e: ok (frames=$frames sent=$sent sent_left=$sent_l $sum)"
+echo "capture_e2e: ok (frames=$frames sent=$sent sent_left=$sent_l targets=$tf targets_left=$tf_l $sum)"

@@ -5,9 +5,11 @@
  *
  * Makes a pty, points the symlink <link> at its slave and writes one item every
  * 100 ms for send_s seconds, cycling through: junk + empty frame, empty frame,
- * bad tail, bad length, a 4-byte payload (synthetic: the real target layout is
- * unverified), and an empty frame split across two writes. Then it removes the
- * link and exits. The slave stays open here so cap-radar never sees a hangup.
+ * bad tail, bad length, a 4-byte payload that is no valid target layout, an
+ * empty frame split across two writes, and a real one-target frame copied from
+ * docs/evidence/radar-targets-pi.txt (9 m, 4 km/h approaching, +2 deg). Then it
+ * removes the link and exits. The slave stays open here so cap-radar never sees
+ * a hangup.
  *
  * Exit: 0, 64 usage, 70 on any failure.
  */
@@ -32,6 +34,8 @@ static const unsigned char BAD_TAIL[] = { 0xF4, 0xF3, 0xF2, 0xF1, 0x00, 0x00, 0x
 static const unsigned char BAD_LEN[]  = { 0xF4, 0xF3, 0xF2, 0xF1, 0xFF, 0xFF };
 static const unsigned char PAYLOAD[]  = { 0xF4, 0xF3, 0xF2, 0xF1, 0x04, 0x00, 0x01, 0x02, 0x03, 0x04,
 					  0xF8, 0xF7, 0xF6, 0xF5 };
+static const unsigned char TARGET[]   = { 0xF4, 0xF3, 0xF2, 0xF1, 0x07, 0x00, 0x01, 0x01, 0x82, 0x09,
+					  0x01, 0x04, 0xDD, 0xF8, 0xF7, 0xF6, 0xF5 };
 
 static int write_all(int fd, const unsigned char *b, size_t n)
 {
@@ -52,7 +56,7 @@ static int write_all(int fd, const unsigned char *b, size_t n)
 
 static int write_item(int fd, unsigned i)
 {
-	switch (i % 6) {
+	switch (i % 7) {
 	case 0:
 		return write_all(fd, JUNK, sizeof(JUNK)) < 0 ? -1 : write_all(fd, EMPTY, sizeof(EMPTY));
 	case 2:
@@ -67,6 +71,8 @@ static int write_item(int fd, unsigned i)
 		if (usleep(20000) < 0 && errno != EINTR)
 			return -1;
 		return write_all(fd, EMPTY + 3, sizeof(EMPTY) - 3);
+	case 6:
+		return write_all(fd, TARGET, sizeof(TARGET));
 	default:
 		return write_all(fd, EMPTY, sizeof(EMPTY));
 	}

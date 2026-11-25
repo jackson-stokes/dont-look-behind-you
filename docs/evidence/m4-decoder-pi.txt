@@ -1,0 +1,80 @@
+LD2451 decoder on the Pi, both radars (82bdef6), Pi 5 "hoopty", 2026-11-12 (Gage)
+==================================================================================
+Purpose: check that cap-radar decodes real target frames from both radars and
+that decoded targets reach the store.
+
+Setup: dlby-super with store, fuse-hub, cap-radar (right, /dev/ttyAMA2) and
+cap-radar-left (/dev/ttyAMA4); no sonar, so fuse-hub never logs `healthy` (it
+needs every sensor up). One person walked out ~10-15 m from each radar in turn
+and walked back toward it.
+
+Commands:
+  cd ~/dlby-src && git checkout gagebranch && git pull && make && make test 2>&1 | tail -3
+  export DLBY_RUN_DIR=$HOME/dlby-demo/run DLBY_LOG_DIR=$HOME/dlby-demo/log DLBY_BIN_DIR=$HOME/dlby-demo/bin
+  export DLBY_CHILDREN=store,fuse-hub,cap-radar,cap-radar-left
+  build/dlby-super 2>&1 | tee ~/dlby-demo/super.log           (T1)
+  grep -E 'target n=|bad_payload' ~/dlby-demo/super.log | head -20; build/tools/dlby-logcat ~/dlby-demo/log   (T2)
+
+The run was ended with Ctrl-C in T1, which also stopped tee, so the exit lines
+are not in the log.
+
+---- make test (tail) ----
+== tests/capture_e2e.sh
+capture_e2e: ok (frames=13 sent=13 sent_left=13 targets=2 targets_left=2 segments=1 records=32 radar=13 radar_left=13 radar_targets=4 sonar=0 alert=5 gap_msg=0 gap_dropped=0 store_gap=1 other=0 bad=0 first_seq=1 last_seq=32 contiguous=1)
+all tests passed (build)
+
+---- T1: dlby-super (verbatim) ----
+dlby-super[3252] I start bin_dir=/home/yeahbrah/dlby-demo/bin children=store,fuse-hub,cap-radar,cap-radar-left
+dlby-super[3252] I child_start name=store pid=3254
+dlby-super[3252] I child_start name=fuse-hub pid=3255
+dlby-super[3252] I child_start name=cap-radar pid=3256
+dlby-super[3252] I child_start name=cap-radar-left pid=3257
+cap-radar[3256] I start dev=/dev/ttyAMA2
+cap-radar-left[3257] I start dev=/dev/ttyAMA4
+fuse-hub[3255] I start sock=/home/yeahbrah/dlby-demo/run/fuse-hub.sock
+store[3254] I start dir=/home/yeahbrah/dlby-demo/log segment=seg-000001.log next_seq=2
+dlby-super[3252] I first_heartbeat name=store ms=13
+dlby-super[3252] I first_heartbeat name=fuse-hub ms=56
+dlby-super[3252] I first_heartbeat name=cap-radar ms=104
+dlby-super[3252] I first_heartbeat name=cap-radar-left ms=104
+cap-radar-left[3257] I radar_up
+fuse-hub[3255] I store_back dropped=1
+fuse-hub[3255] I sensor_up name=radar_left
+cap-radar[3256] I radar_up
+fuse-hub[3255] I sensor_up name=radar
+fuse-hub[3255] I stats radar=7 radar_left=7 sonar=0 rejected=0
+cap-radar[3256] I target n=1 range_cm=400 speed_cms=-83 angle_deg=-6 count=1
+fuse-hub[3255] I stats radar=15 radar_left=14 sonar=0 rejected=0
+cap-radar-left[3257] I target n=1 range_cm=300 speed_cms=-83 angle_deg=0 count=1
+fuse-hub[3255] I stats radar=38 radar_left=29 sonar=0 rejected=0
+cap-radar-left[3257] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-10 count=12
+cap-radar[3256] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-6 count=21
+fuse-hub[3255] I stats radar=48 radar_left=39 sonar=0 rejected=0
+fuse-hub[3255] I stats radar=56 radar_left=46 sonar=0 rejected=0
+fuse-hub[3255] I stats radar=63 radar_left=53 sonar=0 rejected=0
+cap-radar[3256] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-14 count=7
+cap-radar-left[3257] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-3 count=6
+fuse-hub[3255] I stats radar=73 radar_left=63 sonar=0 rejected=0
+fuse-hub[3255] I stats radar=85 radar_left=75 sonar=0 rejected=0
+fuse-hub[3255] I stats radar=93 radar_left=82 sonar=0 rejected=0
+
+---- T2: target lines and store summary (verbatim) ----
+cap-radar[3256] I target n=1 range_cm=400 speed_cms=-83 angle_deg=-6 count=1
+cap-radar-left[3257] I target n=1 range_cm=300 speed_cms=-83 angle_deg=0 count=1
+cap-radar-left[3257] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-10 count=12
+cap-radar[3256] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-6 count=21
+cap-radar[3256] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-14 count=7
+cap-radar-left[3257] I target n=1 range_cm=200 speed_cms=-83 angle_deg=-3 count=6
+segments=1 records=180 radar=93 radar_left=83 radar_targets=72 sonar=0 alert=2 gap_msg=1 gap_dropped=1 store_gap=1 other=0 bad=0 first_seq=1 last_seq=180 contiguous=1
+---- end ----
+
+Reading:
+  - Both radars decode: target lines from cap-radar and cap-radar-left, and no
+    bad_payload line, so every target frame matched the layout.
+  - speed_cms=-83 is 3 km/h approaching (walking pace); range_cm falls 400 -> 200
+    (right) and 300 -> 200 (left); angles -14..0 deg, near straight ahead.
+  - target lines are rate limited: count= is how many target frames each line
+    covered, so the first line logged is not the furthest detection.
+  - Store: radar_targets=72 records carry targets; bad=0, contiguous=1.
+  - store_back dropped=1 / gap_msg=1: one message the hub sent before store was
+    ready at startup, recorded as a gap (as designed).

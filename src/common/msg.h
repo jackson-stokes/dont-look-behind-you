@@ -47,7 +47,10 @@ enum radar_side {
 	RADAR_LEFT  = 1,
 };
 
-/* Radar target. PROVISIONAL until the LD2451 frame format is checked (Gage). */
+/* Radar target, decoded by src/capture/ld2451.c from the layout verified on the
+ * Pi (docs/evidence/radar-targets-pi.txt). The LD2451 reports whole metres and
+ * whole km/h, so range_cm moves in 100 cm steps and speed_cms in ~28 cm/s
+ * steps. dir is the radar's raw direction byte (1 = approaching). */
 #define RADAR_MAX_TARGETS 6
 struct radar_target {
 	uint16_t range_cm;
