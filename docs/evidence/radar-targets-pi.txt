@@ -1,0 +1,170 @@
+LD2451 target frames, right radar (/dev/ttyAMA2), Pi 5 "hoopty", 2026-11-12 (Gage)
+==================================================================================
+Purpose: verify the LD2451 target layout before writing the decoder
+(cap-radar.c sends ntargets=0 until this; msg.h radar_target PROVISIONAL).
+
+Setup: radar pointed down a clear stretch, waist height, one person.
+  idle  40 s, nobody in view
+  walk  40 s, start at the radar, walk straight out ~15 m, turn, walk back
+  fast  40 s, same out-and-back, jogging
+
+Commands (dlby-super stopped; nothing else reading the UART):
+  stty -F /dev/ttyAMA2 115200 raw -echo
+  for p in idle walk fast; do read -p "Enter to start '$p' (40 s) " _; timeout 40 cat /dev/ttyAMA2 > $p.bin; echo "$p: $(stat -c %s $p.bin) bytes"; done
+  hex() { od -An -tx1 -v "$1" | tr -d ' \n'; }
+  for f in idle walk fast; do echo "== $f"; hex $f.bin | grep -o 'f4f3f2f1....' | sort | uniq -c; done
+  for f in walk fast; do echo "== $f"; hex $f.bin | sed 's/f4f3f2f1/\nf4f3f2f1/g' | grep -v '^f4f3f2f10000' | grep .; done
+
+---- output (verbatim) ----
+idle: 280 bytes
+walk: 1452 bytes
+fast: 792 bytes
+
+== idle
+     28 f4f3f2f10000
+== walk
+     16 f4f3f2f10000
+     76 f4f3f2f10700
+== fast
+     18 f4f3f2f10000
+     36 f4f3f2f10700
+
+== walk
+f4f3f2f10700010182090104ddf8f7f6f5
+f4f3f2f10700010185090103fff8f7f6f5
+f4f3f2f10700010173080103fff8f7f6f5
+f4f3f2f1070001017b080103fff8f7f6f5
+f4f3f2f107000101ad0901036ff8f7f6f5
+f4f3f2f10700010181080103fff8f7f6f5
+f4f3f2f1070001017d080103fff8f7f6f5
+f4f3f2f1070001015c080104b2f8f7f6f5
+f4f3f2f1070001017c080103fff8f7f6f5
+f4f3f2f10700010183080103fff8f7f6f5
+f4f3f2f10700010180070104fff8f7f6f5
+f4f3f2f1070001017f070103fff8f7f6f5
+f4f3f2f1070001017b060104fff8f7f6f5
+f4f3f2f10700010180060103fff8f7f6f5
+f4f3f2f10700010180060103fff8f7f6f5
+f4f3f2f10700010181060103fff8f7f6f5
+f4f3f2f10700010185060104c1f8f7f6f5
+f4f3f2f1070001017d060103fff8f7f6f5
+f4f3f2f10700010184060104fff8f7f6f5
+f4f3f2f10700010190060103c9f8f7f6f5
+f4f3f2f10700010180060103eaf8f7f6f5
+f4f3f2f1070001017e050103fff8f7f6f5
+f4f3f2f1070001017c050104fff8f7f6f5
+f4f3f2f1070001017b05010491f8f7f6f5
+f4f3f2f10700010181040103fff8f7f6f5
+f4f3f2f1070001017f050103e7f8f7f6f5
+f4f3f2f1070001018b0501048df8f7f6f5
+f4f3f2f1070001017c040103fff8f7f6f5
+f4f3f2f1070001018a040103fff8f7f6f5
+f4f3f2f1070001017a040103cbf8f7f6f5
+f4f3f2f107000101760401067df8f7f6f5
+f4f3f2f10700010188020103fff8f7f6f5
+f4f3f2f1070001017e0201036ff8f7f6f5
+f4f3f2f10700010180020103fff8f7f6f5
+f4f3f2f1070001017b020103d1f8f7f6f5
+f4f3f2f1070001017a020103a4f8f7f6f5
+f4f3f2f10700010166020103a3f8f7f6f5
+f4f3f2f1070001017a020103adf8f7f6f5
+f4f3f2f10700010179060103fff8f7f6f5
+f4f3f2f1070001017b060103fff8f7f6f5
+f4f3f2f1070001018706010451f8f7f6f5
+f4f3f2f1070001017a060103fff8f7f6f5
+f4f3f2f1070001018a060103fff8f7f6f5
+f4f3f2f10700010185040103e0f8f7f6f5
+f4f3f2f1070001017f050103fff8f7f6f5
+f4f3f2f1070001017e050103fff8f7f6f5
+f4f3f2f1070001017404010354f8f7f6f5
+f4f3f2f10700010175040103abf8f7f6f5
+f4f3f2f1070001017b040103fff8f7f6f5
+f4f3f2f1070001017f040104fff8f7f6f5
+f4f3f2f1070001016804010465f8f7f6f5
+f4f3f2f1070001017c040103fff8f7f6f5
+f4f3f2f10700010181040104fff8f7f6f5
+f4f3f2f10700010194040104fff8f7f6f5
+f4f3f2f10700010175030104f5f8f7f6f5
+f4f3f2f10700010179030104d3f8f7f6f5
+f4f3f2f1070001017e020103fff8f7f6f5
+f4f3f2f1070001018203010354f8f7f6f5
+f4f3f2f10700010178030103fff8f7f6f5
+f4f3f2f1070001017c020104fff8f7f6f5
+f4f3f2f10700010180020103fff8f7f6f5
+f4f3f2f1070001018002010384f8f7f6f5
+f4f3f2f1070001017802010391f8f7f6f5
+f4f3f2f107000101830201045ff8f7f6f5
+f4f3f2f10700010187020103fef8f7f6f5
+f4f3f2f1070001017e020103fff8f7f6f5
+f4f3f2f1070001017d020103fcf8f7f6f5
+f4f3f2f107000101770201037af8f7f6f5
+f4f3f2f10700010180020103fff8f7f6f5
+f4f3f2f1070001017f020103fff8f7f6f5
+f4f3f2f10700010186020103caf8f7f6f5
+f4f3f2f10700010189020103b2f8f7f6f5
+f4f3f2f107000101b502010383f8f7f6f5
+f4f3f2f1070001018202010387f8f7f6f5
+f4f3f2f107000101810201038cf8f7f6f5
+f4f3f2f1070001018802010391f8f7f6f5
+== fast
+f4f3f2f1070001017a080103fff8f7f6f5
+f4f3f2f1070001015c080104a3f8f7f6f5
+f4f3f2f1070001017d070108fff8f7f6f5
+f4f3f2f1070001018206010bfff8f7f6f5
+f4f3f2f1070001017f06010cf3f8f7f6f5
+f4f3f2f1070001017a06010e8bf8f7f6f5
+f4f3f2f1070001017a04010db0f8f7f6f5
+f4f3f2f1070001019202010375f8f7f6f5
+f4f3f2f1070001018004010af2f8f7f6f5
+f4f3f2f1070001017e04010afff8f7f6f5
+f4f3f2f1070001018003010afff8f7f6f5
+f4f3f2f1070001017802010a83f8f7f6f5
+f4f3f2f1070001017f020108e0f8f7f6f5
+f4f3f2f10700010180020107fff8f7f6f5
+f4f3f2f1070001018802010684f8f7f6f5
+f4f3f2f1070001018a02010370f8f7f6f5
+f4f3f2f1070001017402010353f8f7f6f5
+f4f3f2f10700010183080103fff8f7f6f5
+f4f3f2f1070001017e08010865f8f7f6f5
+f4f3f2f1070001017c070108fff8f7f6f5
+f4f3f2f10700010182070108e8f8f7f6f5
+f4f3f2f107000101790601086af8f7f6f5
+f4f3f2f10700010184060107d2f8f7f6f5
+f4f3f2f107000101750601076ef8f7f6f5
+f4f3f2f1070001017e06010afff8f7f6f5
+f4f3f2f1070001017f050109fff8f7f6f5
+f4f3f2f1070001018004010aecf8f7f6f5
+f4f3f2f1070001017705010a7cf8f7f6f5
+f4f3f2f10700010182040109fff8f7f6f5
+f4f3f2f10700010186030108fff8f7f6f5
+f4f3f2f10700010173030108fff8f7f6f5
+f4f3f2f1070001017f030107fff8f7f6f5
+f4f3f2f10700010181020106fff8f7f6f5
+f4f3f2f1070001018902010351f8f7f6f5
+f4f3f2f1070001017002010387f8f7f6f5
+f4f3f2f107000101620201035bf8f7f6f5
+---- end output ----
+
+Reading (frame = F4F3F2F1, u16 LE length, payload, F8F7F6F5):
+  every target frame: length 7 = 2 header bytes + 5 bytes for one target
+  payload[0]  01         target count (always 1: one person)
+  payload[1]  01         alarm/approach flag (always 1; meaning unconfirmed)
+  per target, 5 bytes:
+    [0] angle  + 0x80    0x80 = straight ahead; seen 0x5c..0xb5 (-36..+53 deg),
+                         mostly 0x70..0x90; sign (left/right) unverified
+    [1] distance, m      walk: 9 8 7 6 5 4 2 and again 6 .. 2; fast: 8 .. 2 twice
+    [2] direction        always 01 (approaching); 00 never seen
+    [3] speed, km/h      walk 3-4 (one 6); jog 7-14 (0x07..0x0e), dropping to 3
+                         as the runner slowed at the radar
+    [4] SNR              0x51..0xff; 0xff looks saturated
+
+Observations:
+  - Only approaching targets are reported: each run starts AT the radar, but the
+    first target frame is already at 8-9 m and distance only decreases. The
+    outbound legs produced empty frames only.
+  - Target frames arrive much faster than the ~1.4 s empty-frame rate.
+  - Nearest reported distance 2 m; furthest 9 m for a person on foot.
+  - Resolution is 1 m and 1 km/h.
+
+Not verified by this capture: direction 00, the multi-target stride (2 targets
+should be length 12), angle sign, range for a bicycle or car.

@@ -96,7 +96,8 @@ $(BUILD)/obj/capture/%.o: src/capture/%.c $(CAP_HDR) $(HUB_HDR) $(COMMON_HDR)
 	$(CC) $(CPPFLAGS) -Isrc/capture -Isrc/hub $(ALL_CFLAGS) -c -o $@ $<
 
 # The capture processes' testable parts (everything but main), linked into the unit tests.
-$(CAP_LIB): $(BUILD)/obj/capture/radar_parse.o $(BUILD)/obj/capture/echo.o
+$(CAP_LIB): $(BUILD)/obj/capture/radar_parse.o $(BUILD)/obj/capture/ld2451.o \
+		$(BUILD)/obj/capture/echo.o
 	$(AR) rcs $@ $^
 
 $(BUILD)/cap-radar: $(BUILD)/obj/capture/cap-radar.o $(CAP_LIB) $(LIB)

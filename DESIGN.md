@@ -37,6 +37,10 @@ Observed on the bench: with no targets the radar sends one empty frame every ~1.
 only while it sees targets, unverified.
 
 ### Fusion states and driver signals
+There is a radar on each side and one ultrasonic, beside the right radar. The right side
+runs the full radar + ultrasonic handoff below; the left side is radar only, so it can raise
+APPROACHING but never IN_ZONE.
+
 While both sensors are healthy, the radar alone raises the early APPROACHING warning (solid
 LED) but IN_ZONE (buzzer) needs the ultrasonic to confirm the radar's track; if one is lost,
 the survivor still warns in the degraded pattern. `fuse-hub` starts in BLIND, then moves

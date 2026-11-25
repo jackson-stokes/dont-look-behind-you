@@ -2,8 +2,8 @@
  * I/O, so it is unit-tested directly.
  *
  * Frame: F4 F3 F2 F1, u16 LE payload length, payload, F8 F7 F6 F5. With no
- * targets the payload is empty (docs/evidence/pi-sensor-smoke.txt). The target
- * layout inside the payload is not verified yet, so nothing here decodes it.
+ * targets the payload is empty (docs/evidence/pi-sensor-smoke.txt). Target
+ * payloads are decoded separately, by ld2451.c.
  */
 #ifndef DLBY_RADAR_PARSE_H
 #define DLBY_RADAR_PARSE_H
