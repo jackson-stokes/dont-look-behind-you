@@ -2,8 +2,9 @@
  * passed in, so it is unit-tested directly and the replay harness can drive it.
  *
  * Inputs: radar and sonar messages as received, and each evaluation's up-mask
- * from health.c ((1u << enum sensor) per sensor that is up). Output: enum
- * fuse_state from msg.h.
+ * from health.c ((1u << enum sensor) per sensor that is up). Output: one
+ * enum fuse_state per side of the car, one per mirror LED (alert_msg.state is
+ * the right side, alert_msg.state_left the left).
  *
  *   track    an approaching radar target (speed <= FUSE_APPROACH_CMS, range <=
  *            FUSE_WATCH_CM), valid for FUSE_TRACK_TTL_NS after the last frame
@@ -12,22 +13,25 @@
  *            FUSE_ZONE_MIN_CM..FUSE_ZONE_MAX_CM), so one dropout doesn't flicker.
  *   confirm  a right-radar track seen within FUSE_CONFIRM_NS.
  *
- * Right radar and sonar up:   zone && confirm -> IN_ZONE; track -> APPROACHING;
- *                             else CLEAR (DEG_CLEAR if the left radar is lost).
- *                             zone without confirm stays CLEAR and is counted in
- *                             zone_unconfirmed (a pole, a parked car).
- * Right radar lost:           zone -> DEG_IN_ZONE; left track -> DEG_APPROACHING;
- *                             else DEG_CLEAR.
- * Sonar lost:                 track -> DEG_APPROACHING; else DEG_CLEAR.
- * Nothing up:                 BLIND.
- * The left radar has no sonar, so its tracks raise APPROACHING but never confirm.
+ * Right side (right radar + the ultrasonic):
+ *   both up        zone && confirm -> IN_ZONE; track -> APPROACHING; else CLEAR.
+ *                  zone without confirm stays CLEAR and is counted in
+ *                  zone_unconfirmed (a pole, a parked car).
+ *   radar lost     zone -> DEG_IN_ZONE; else DEG_CLEAR.
+ *   sonar lost     track -> DEG_APPROACHING; else DEG_CLEAR.
+ *   both lost      BLIND.
+ * Left side (radar only, no ultrasonic):
+ *   up             track -> APPROACHING; else CLEAR. Never IN_ZONE.
+ *   lost           BLIND: that side is unwatched (DESIGN.md §3).
+ * Neither side's sensors change the other side's state.
  *
- * Hold: while the up-mask is unchanged, a drop to a less urgent state takes
- * effect only after hold_ns without support. Health changes apply at once.
+ * Hold, per side: while that side's sensors' up-bits are unchanged, a drop to a
+ * less urgent state takes effect only after hold_ns without support, measured
+ * from the first evaluation that sees the drop. Health changes apply at once.
  *
  * FUSE_RADAR_PRESENCE is the fallback for radar frames without decoded targets:
  * radars count only for health, never track or confirm, and the zone alone
- * gives IN_ZONE.
+ * gives IN_ZONE. The left side can then show only CLEAR or BLIND.
  */
 #ifndef DLBY_FUSE_H
 #define DLBY_FUSE_H
@@ -58,6 +62,19 @@ enum fuse_side {
 	FUSE_LEFT  = 1,
 };
 
+/* What one side shows, and its hold. */
+struct fuse_hold {
+	enum fuse_state state;
+	unsigned last_up;		/* this side's sensors' up-bits */
+	bool     dropping;		/* less urgent raw state, waiting out hold */
+	int64_t  drop_ns;
+};
+
+struct fuse_out {
+	enum fuse_state right;
+	enum fuse_state left;
+};
+
 struct fuse {
 	enum fuse_radar_mode mode;
 	int64_t hold_ns;
@@ -68,12 +85,9 @@ struct fuse {
 
 	uint8_t  pings;			/* last 3 pings, bit 0 newest, 1 = hit */
 
-	enum fuse_state state;
-	unsigned last_up;
-	bool     dropping;		/* less urgent raw state, waiting out hold */
-	int64_t  drop_ns;
+	struct fuse_hold side[2];	/* enum fuse_side */
 
-	bool     unconfirmed;		/* zone without confirm, last evaluation */
+	bool     unconfirmed;		/* right zone without confirm, last evaluation */
 	uint64_t zone_unconfirmed;	/* times that began */
 };
 
@@ -83,8 +97,8 @@ void fuse_init(struct fuse *f, enum fuse_radar_mode mode, int64_t hold_ns);
 void fuse_radar(struct fuse *f, enum sensor s, const struct radar_msg *m, int64_t now_ns);
 void fuse_sonar(struct fuse *f, const struct sonar_msg *m, int64_t now_ns);
 
-/* up: (1u << enum sensor) for each sensor up. Returns the state to show. */
-enum fuse_state fuse_eval(struct fuse *f, unsigned up, int64_t now_ns);
+/* up: (1u << enum sensor) for each sensor up. Fills the state each side shows. */
+void fuse_eval(struct fuse *f, unsigned up, int64_t now_ns, struct fuse_out *out);
 
 /* NULL or "" -> tracks; "tracks" | "presence"; else -1 with EINVAL. */
 int fuse_parse_mode(const char *s, enum fuse_radar_mode *out);

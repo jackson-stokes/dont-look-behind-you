@@ -8,6 +8,16 @@
 #define L   (1u << SENSOR_RADAR_LEFT)
 #define ALL (R | S | L)
 
+/* Evaluate and check what each side shows: right mirror, left mirror. */
+#define SIDES(f, up, now, right_st, left_st) do { \
+	struct fuse_out o_; \
+	fuse_eval((f), (up), (now), &o_); \
+	if (o_.right != (right_st) || o_.left != (left_st)) \
+		printf("  got right=%s left=%s\n", fuse_state_name(o_.right), \
+		       fuse_state_name(o_.left)); \
+	CHECK(o_.right == (right_st) && o_.left == (left_st)); \
+} while (0)
+
 /* Echo width for a target at cm, at 343 m/s. */
 static uint32_t echo_for_cm(uint32_t cm)
 {
@@ -61,45 +71,47 @@ static void test_zone_range(void)
 	m.echo_ns = echo_for_cm(FUSE_ZONE_MAX_CM + 2);
 	fuse_sonar(&f, &m, 0);
 	fuse_sonar(&f, &m, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
 	m.echo_ns = echo_for_cm(FUSE_ZONE_MIN_CM - 2);
 	fuse_sonar(&f, &m, 0);
 	fuse_sonar(&f, &m, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
 	m.echo_ns = echo_for_cm(FUSE_ZONE_MAX_CM);
 	fuse_sonar(&f, &m, 0);
 	fuse_sonar(&f, &m, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_IN_ZONE);
+	SIDES(&f, ALL, 0, ST_IN_ZONE, ST_CLEAR);
 	m.flags = SONAR_STUCK_HIGH;		/* a stuck line is never a hit */
 	fuse_sonar(&f, &m, 0);
 	fuse_sonar(&f, &m, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
 }
 
+/* Each side comes up with its own sensors. */
 static void test_blind_then_clear(void)
 {
 	struct fuse f;
 
 	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
-	CHECK(f.state == ST_BLIND);
-	CHECK(fuse_eval(&f, 0, 0) == ST_BLIND);
-	CHECK(fuse_eval(&f, R, 0) == ST_DEG_CLEAR);
-	CHECK(fuse_eval(&f, R | S, 0) == ST_DEG_CLEAR);	/* left radar still missing */
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	CHECK(f.side[FUSE_RIGHT].state == ST_BLIND && f.side[FUSE_LEFT].state == ST_BLIND);
+	SIDES(&f, 0, 0, ST_BLIND, ST_BLIND);
+	SIDES(&f, R, 0, ST_DEG_CLEAR, ST_BLIND);
+	SIDES(&f, R | S, 0, ST_CLEAR, ST_BLIND);	/* right side whole, left unwatched */
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
+	SIDES(&f, L, 0, ST_BLIND, ST_CLEAR);
 }
 
-/* A cyclist pass: radar track -> APPROACHING, 2 of 3 hits -> IN_ZONE. */
+/* A cyclist pass on the right: track -> APPROACHING, 2 of 3 hits -> IN_ZONE. */
 static void test_pass(void)
 {
 	struct fuse f;
 
 	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
 	radar(&f, SENSOR_RADAR, 1500, -400, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_APPROACHING);
+	SIDES(&f, ALL, 0, ST_APPROACHING, ST_CLEAR);
 	ping(&f, true, 60 * MS);
-	CHECK(fuse_eval(&f, ALL, 60 * MS) == ST_APPROACHING);	/* 1 of 3 */
+	SIDES(&f, ALL, 60 * MS, ST_APPROACHING, ST_CLEAR);	/* 1 of 3 */
 	ping(&f, true, 120 * MS);
-	CHECK(fuse_eval(&f, ALL, 120 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, 120 * MS, ST_IN_ZONE, ST_CLEAR);
 	CHECK(f.zone_unconfirmed == 0);
 }
 
@@ -111,11 +123,11 @@ static void test_one_dropout_keeps_zone(void)
 	radar(&f, SENSOR_RADAR, 300, -400, 0);
 	ping(&f, true, 0);
 	ping(&f, true, 60 * MS);
-	CHECK(fuse_eval(&f, ALL, 60 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, 60 * MS, ST_IN_ZONE, ST_CLEAR);
 	ping(&f, false, 120 * MS);			/* hit hit miss */
-	CHECK(fuse_eval(&f, ALL, 120 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, 120 * MS, ST_IN_ZONE, ST_CLEAR);
 	ping(&f, false, 180 * MS);			/* hit miss miss */
-	CHECK(fuse_eval(&f, ALL, 180 * MS) == ST_APPROACHING);
+	SIDES(&f, ALL, 180 * MS, ST_APPROACHING, ST_CLEAR);
 }
 
 /* Something in the zone that the radar never tracked: a pole, a parked car. */
@@ -127,15 +139,15 @@ static void test_unconfirmed_stays_clear(void)
 	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
 	for (i = 0; i < 5; i++) {
 		ping(&f, true, i * 60 * MS);
-		CHECK(fuse_eval(&f, ALL, i * 60 * MS) == ST_CLEAR);
+		SIDES(&f, ALL, i * 60 * MS, ST_CLEAR, ST_CLEAR);
 	}
 	CHECK(f.zone_unconfirmed == 1);		/* counted once per episode */
 	ping(&f, false, 300 * MS);
 	ping(&f, false, 360 * MS);
-	CHECK(fuse_eval(&f, ALL, 360 * MS) == ST_CLEAR);
+	SIDES(&f, ALL, 360 * MS, ST_CLEAR, ST_CLEAR);
 	ping(&f, true, 420 * MS);
 	ping(&f, true, 480 * MS);
-	CHECK(fuse_eval(&f, ALL, 480 * MS) == ST_CLEAR);
+	SIDES(&f, ALL, 480 * MS, ST_CLEAR, ST_CLEAR);
 	CHECK(f.zone_unconfirmed == 2);
 }
 
@@ -145,13 +157,13 @@ static void test_receding_and_far_ignored(void)
 
 	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
 	radar(&f, SENSOR_RADAR, 1000, 300, 0);			/* moving away */
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
 	radar(&f, SENSOR_RADAR, 1000, FUSE_APPROACH_CMS + 1, 0);	/* too slow */
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
 	radar(&f, SENSOR_RADAR, FUSE_WATCH_CM + 1, -400, 0);	/* too far */
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
 	radar(&f, SENSOR_RADAR, FUSE_WATCH_CM, FUSE_APPROACH_CMS, 0);	/* both limits */
-	CHECK(fuse_eval(&f, ALL, 0) == ST_APPROACHING);
+	SIDES(&f, ALL, 0, ST_APPROACHING, ST_CLEAR);
 }
 
 /* ntargets past RADAR_MAX_TARGETS must not read past t[]. */
@@ -167,7 +179,7 @@ static void test_ntargets_clamped(void)
 	m.t[RADAR_MAX_TARGETS - 1].speed_cms = -400;
 	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
 	fuse_radar(&f, SENSOR_RADAR, &m, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_APPROACHING);
+	SIDES(&f, ALL, 0, ST_APPROACHING, ST_CLEAR);
 	CHECK(f.track_cm[FUSE_RIGHT] == 500);
 }
 
@@ -179,19 +191,19 @@ static void test_track_ttl_and_confirm_window(void)
 
 	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
 	radar(&f, SENSOR_RADAR, 800, -400, 0);
-	CHECK(fuse_eval(&f, ALL, FUSE_TRACK_TTL_NS) == ST_APPROACHING);
-	CHECK(fuse_eval(&f, ALL, FUSE_TRACK_TTL_NS + 1) == ST_CLEAR);
+	SIDES(&f, ALL, FUSE_TRACK_TTL_NS, ST_APPROACHING, ST_CLEAR);
+	SIDES(&f, ALL, FUSE_TRACK_TTL_NS + 1, ST_CLEAR, ST_CLEAR);
 	/* The cyclist left the radar's view and reaches the zone 2.5 s later. */
 	t = 2500 * MS;
 	ping(&f, true, t);
 	ping(&f, true, t + 60 * MS);
-	CHECK(fuse_eval(&f, ALL, t + 60 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, t + 60 * MS, ST_IN_ZONE, ST_CLEAR);
 	/* Past the confirm window the same hits are unconfirmed. */
 	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
 	radar(&f, SENSOR_RADAR, 800, -400, 0);
 	ping(&f, true, FUSE_CONFIRM_NS);
 	ping(&f, true, FUSE_CONFIRM_NS + 1);
-	CHECK(fuse_eval(&f, ALL, FUSE_CONFIRM_NS + 1) == ST_CLEAR);
+	SIDES(&f, ALL, FUSE_CONFIRM_NS + 1, ST_CLEAR, ST_CLEAR);
 	CHECK(f.zone_unconfirmed == 1);
 }
 
@@ -205,21 +217,21 @@ static void test_hold(void)
 	radar(&f, SENSOR_RADAR, 300, -400, 0);
 	ping(&f, true, 0);
 	ping(&f, true, 60 * MS);
-	CHECK(fuse_eval(&f, ALL, 60 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, 60 * MS, ST_IN_ZONE, ST_CLEAR);
 	ping(&f, false, 120 * MS);
 	ping(&f, false, 180 * MS);			/* zone gone at 180 ms */
-	CHECK(fuse_eval(&f, ALL, 180 * MS) == ST_IN_ZONE);
-	CHECK(fuse_eval(&f, ALL, 180 * MS + FUSE_HOLD_NS - 1) == ST_IN_ZONE);
-	CHECK(fuse_eval(&f, ALL, 180 * MS + FUSE_HOLD_NS) == ST_APPROACHING);
+	SIDES(&f, ALL, 180 * MS, ST_IN_ZONE, ST_CLEAR);
+	SIDES(&f, ALL, 180 * MS + FUSE_HOLD_NS - 1, ST_IN_ZONE, ST_CLEAR);
+	SIDES(&f, ALL, 180 * MS + FUSE_HOLD_NS, ST_APPROACHING, ST_CLEAR);
 	/* Support returning inside the hold cancels it. */
 	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
 	radar(&f, SENSOR_RADAR, 800, -400, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_APPROACHING);
-	CHECK(fuse_eval(&f, ALL, FUSE_TRACK_TTL_NS + 1) == ST_APPROACHING);	/* holding */
-	CHECK(f.dropping);
+	SIDES(&f, ALL, 0, ST_APPROACHING, ST_CLEAR);
+	SIDES(&f, ALL, FUSE_TRACK_TTL_NS + 1, ST_APPROACHING, ST_CLEAR);	/* holding */
+	CHECK(f.side[FUSE_RIGHT].dropping);
 	radar(&f, SENSOR_RADAR, 700, -400, FUSE_TRACK_TTL_NS + 100 * MS);
-	CHECK(fuse_eval(&f, ALL, FUSE_TRACK_TTL_NS + 100 * MS) == ST_APPROACHING);
-	CHECK(!f.dropping);
+	SIDES(&f, ALL, FUSE_TRACK_TTL_NS + 100 * MS, ST_APPROACHING, ST_CLEAR);
+	CHECK(!f.side[FUSE_RIGHT].dropping);
 }
 
 static void test_right_radar_lost(void)
@@ -230,20 +242,21 @@ static void test_right_radar_lost(void)
 	radar(&f, SENSOR_RADAR, 300, -400, 0);
 	ping(&f, true, 0);
 	ping(&f, true, 60 * MS);
-	CHECK(fuse_eval(&f, ALL, 60 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, 60 * MS, ST_IN_ZONE, ST_CLEAR);
 	/* Health changes apply at once, never held. */
-	CHECK(fuse_eval(&f, S | L, 60 * MS) == ST_DEG_IN_ZONE);	/* sonar alone warns */
+	SIDES(&f, S | L, 60 * MS, ST_DEG_IN_ZONE, ST_CLEAR);	/* ultrasonic alone warns */
 	ping(&f, false, 120 * MS);
 	ping(&f, false, 180 * MS);
-	CHECK(fuse_eval(&f, S | L, 180 * MS) == ST_DEG_IN_ZONE);	/* hold starts */
-	CHECK(fuse_eval(&f, S | L, 180 * MS + FUSE_HOLD_NS) == ST_DEG_CLEAR);
+	SIDES(&f, S | L, 180 * MS, ST_DEG_IN_ZONE, ST_CLEAR);	/* hold starts */
+	SIDES(&f, S | L, 180 * MS + FUSE_HOLD_NS, ST_DEG_CLEAR, ST_CLEAR);
+	/* A left track lights the left mirror only. */
 	radar(&f, SENSOR_RADAR_LEFT, 900, -400, 200 * MS);
-	CHECK(fuse_eval(&f, S | L, 200 * MS + FUSE_HOLD_NS) == ST_DEG_APPROACHING);
+	SIDES(&f, S | L, 200 * MS + FUSE_HOLD_NS, ST_DEG_CLEAR, ST_APPROACHING);
 	/* The right radar's old track must not count when it comes back. */
 	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
 	radar(&f, SENSOR_RADAR, 300, -400, 0);
-	CHECK(fuse_eval(&f, S | L, 0) == ST_DEG_CLEAR);
-	CHECK(fuse_eval(&f, ALL, 10 * MS) == ST_CLEAR);
+	SIDES(&f, S | L, 0, ST_DEG_CLEAR, ST_CLEAR);
+	SIDES(&f, ALL, 10 * MS, ST_CLEAR, ST_CLEAR);
 }
 
 static void test_sonar_lost(void)
@@ -254,14 +267,14 @@ static void test_sonar_lost(void)
 	radar(&f, SENSOR_RADAR, 300, -400, 0);
 	ping(&f, true, 0);
 	ping(&f, true, 60 * MS);
-	CHECK(fuse_eval(&f, ALL, 60 * MS) == ST_IN_ZONE);
-	CHECK(fuse_eval(&f, R | L, 60 * MS) == ST_DEG_APPROACHING);	/* radar alone */
-	CHECK(fuse_eval(&f, R | L, FUSE_TRACK_TTL_NS + 1) == ST_DEG_APPROACHING);	/* hold starts */
-	CHECK(fuse_eval(&f, R | L, FUSE_TRACK_TTL_NS + 1 + FUSE_HOLD_NS) == ST_DEG_CLEAR);
+	SIDES(&f, ALL, 60 * MS, ST_IN_ZONE, ST_CLEAR);
+	SIDES(&f, R | L, 60 * MS, ST_DEG_APPROACHING, ST_CLEAR);	/* radar alone */
+	SIDES(&f, R | L, FUSE_TRACK_TTL_NS + 1, ST_DEG_APPROACHING, ST_CLEAR);	/* hold starts */
+	SIDES(&f, R | L, FUSE_TRACK_TTL_NS + 1 + FUSE_HOLD_NS, ST_DEG_CLEAR, ST_CLEAR);
 	/* Old pings must not count when the sonar comes back: one new hit isn't 2 of 3. */
 	radar(&f, SENSOR_RADAR, 300, -400, 3000 * MS);
 	ping(&f, true, 3000 * MS);
-	CHECK(fuse_eval(&f, ALL, 3000 * MS) == ST_APPROACHING);
+	SIDES(&f, ALL, 3000 * MS, ST_APPROACHING, ST_CLEAR);
 }
 
 static void test_all_lost_blind(void)
@@ -270,35 +283,63 @@ static void test_all_lost_blind(void)
 
 	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
 	radar(&f, SENSOR_RADAR, 300, -400, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_APPROACHING);
-	CHECK(fuse_eval(&f, 0, 10 * MS) == ST_BLIND);		/* not held */
-	CHECK(fuse_eval(&f, L, 20 * MS) == ST_DEG_CLEAR);	/* left radar only */
+	SIDES(&f, ALL, 0, ST_APPROACHING, ST_CLEAR);
+	SIDES(&f, 0, 10 * MS, ST_BLIND, ST_BLIND);		/* not held */
+	SIDES(&f, L, 20 * MS, ST_BLIND, ST_CLEAR);		/* left radar only */
 }
 
-/* No left sonar: the left radar raises APPROACHING but never confirms. */
+/* No left ultrasonic: a left track raises APPROACHING on the left mirror, never
+ * IN_ZONE, and never touches the right side. */
 static void test_left_radar(void)
 {
 	struct fuse f;
 
 	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
 	radar(&f, SENSOR_RADAR_LEFT, 900, -400, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_APPROACHING);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_APPROACHING);
+	/* Right-side zone hits: the left track doesn't confirm them. */
 	ping(&f, true, 60 * MS);
 	ping(&f, true, 120 * MS);
-	CHECK(fuse_eval(&f, ALL, 120 * MS) == ST_APPROACHING);
+	SIDES(&f, ALL, 120 * MS, ST_CLEAR, ST_APPROACHING);
 	CHECK(f.zone_unconfirmed == 1);
-	/* Left radar lost: the right side is unaffected, but CLEAR shows degraded. */
-	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
-	CHECK(fuse_eval(&f, R | S, 0) == ST_DEG_CLEAR);
-	radar(&f, SENSOR_RADAR, 300, -400, 0);
-	CHECK(fuse_eval(&f, R | S, 0) == ST_APPROACHING);
-	ping(&f, true, 0);
-	ping(&f, true, 60 * MS);
-	CHECK(fuse_eval(&f, R | S, 60 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, FUSE_TRACK_TTL_NS + 1, ST_CLEAR, ST_CLEAR);
 	/* A target on an unknown sensor is ignored. */
 	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
 	radar(&f, SENSOR_SONAR, 300, -400, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
+}
+
+/* Losing the left radar leaves the right side's state and hold alone. */
+static void test_left_loss_leaves_right(void)
+{
+	struct fuse f;
+
+	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
+	radar(&f, SENSOR_RADAR, 300, -400, 0);
+	ping(&f, true, 0);
+	ping(&f, true, 60 * MS);
+	SIDES(&f, ALL, 60 * MS, ST_IN_ZONE, ST_CLEAR);
+	SIDES(&f, R | S, 70 * MS, ST_IN_ZONE, ST_BLIND);
+	CHECK(!f.side[FUSE_RIGHT].dropping);
+	SIDES(&f, ALL, 80 * MS, ST_IN_ZONE, ST_CLEAR);
+	/* With nothing on the right, CLEAR stays CLEAR (not DEG_CLEAR). */
+	fuse_init(&f, FUSE_RADAR_TRACKS, 0);
+	SIDES(&f, R | S, 0, ST_CLEAR, ST_BLIND);
+}
+
+/* Each side's hold runs on its own. */
+static void test_holds_independent(void)
+{
+	struct fuse f;
+
+	fuse_init(&f, FUSE_RADAR_TRACKS, FUSE_HOLD_NS);
+	radar(&f, SENSOR_RADAR, 800, -400, 0);
+	radar(&f, SENSOR_RADAR_LEFT, 800, -400, 0);
+	SIDES(&f, ALL, 0, ST_APPROACHING, ST_APPROACHING);
+	radar(&f, SENSOR_RADAR, 700, -400, 1000 * MS);	/* only the right is refreshed */
+	SIDES(&f, ALL, FUSE_TRACK_TTL_NS + 1, ST_APPROACHING, ST_APPROACHING);
+	CHECK(f.side[FUSE_LEFT].dropping && !f.side[FUSE_RIGHT].dropping);
+	SIDES(&f, ALL, FUSE_TRACK_TTL_NS + 1 + FUSE_HOLD_NS, ST_APPROACHING, ST_CLEAR);
 }
 
 /* Fallback when radar targets aren't decoded: the zone alone warns. */
@@ -309,19 +350,20 @@ static void test_presence_mode(void)
 	fuse_init(&f, FUSE_RADAR_PRESENCE, 0);
 	radar(&f, SENSOR_RADAR, 300, -400, 0);		/* targets ignored */
 	radar(&f, SENSOR_RADAR_LEFT, 300, -400, 0);
-	CHECK(fuse_eval(&f, ALL, 0) == ST_CLEAR);
+	SIDES(&f, ALL, 0, ST_CLEAR, ST_CLEAR);
 	ping(&f, true, 60 * MS);
-	CHECK(fuse_eval(&f, ALL, 60 * MS) == ST_CLEAR);
+	SIDES(&f, ALL, 60 * MS, ST_CLEAR, ST_CLEAR);
 	ping(&f, true, 120 * MS);
-	CHECK(fuse_eval(&f, ALL, 120 * MS) == ST_IN_ZONE);
+	SIDES(&f, ALL, 120 * MS, ST_IN_ZONE, ST_CLEAR);
 	CHECK(f.zone_unconfirmed == 0);
 	/* Radar health still drives DEG and BLIND. */
-	CHECK(fuse_eval(&f, S | L, 120 * MS) == ST_DEG_IN_ZONE);
+	SIDES(&f, S | L, 120 * MS, ST_DEG_IN_ZONE, ST_CLEAR);
 	ping(&f, false, 180 * MS);
 	ping(&f, false, 240 * MS);
-	CHECK(fuse_eval(&f, S | L, 240 * MS) == ST_DEG_CLEAR);
-	CHECK(fuse_eval(&f, R | L, 240 * MS) == ST_DEG_CLEAR);	/* sonar lost: no track */
-	CHECK(fuse_eval(&f, 0, 240 * MS) == ST_BLIND);
+	SIDES(&f, S | L, 240 * MS, ST_DEG_CLEAR, ST_CLEAR);
+	SIDES(&f, R | L, 240 * MS, ST_DEG_CLEAR, ST_CLEAR);	/* sonar lost: no track */
+	SIDES(&f, R | S, 240 * MS, ST_CLEAR, ST_BLIND);
+	SIDES(&f, 0, 240 * MS, ST_BLIND, ST_BLIND);
 }
 
 static void test_parse_and_names(void)
@@ -359,6 +401,8 @@ int main(void)
 	RUN(test_sonar_lost);
 	RUN(test_all_lost_blind);
 	RUN(test_left_radar);
+	RUN(test_left_loss_leaves_right);
+	RUN(test_holds_independent);
 	RUN(test_presence_mode);
 	RUN(test_parse_and_names);
 	return 0;

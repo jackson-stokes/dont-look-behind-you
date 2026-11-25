@@ -5,12 +5,17 @@
 
 #define UP(s) (1u << (s))
 
+/* Each side's sensors, for its hold. */
+#define RIGHT_MASK (UP(SENSOR_RADAR) | UP(SENSOR_SONAR))
+#define LEFT_MASK  UP(SENSOR_RADAR_LEFT)
+
 void fuse_init(struct fuse *f, enum fuse_radar_mode mode, int64_t hold_ns)
 {
 	memset(f, 0, sizeof(*f));
 	f->mode = mode;
 	f->hold_ns = hold_ns < 0 ? 0 : hold_ns;
-	f->state = ST_BLIND;
+	f->side[FUSE_RIGHT].state = ST_BLIND;
+	f->side[FUSE_LEFT].state = ST_BLIND;
 }
 
 uint32_t fuse_echo_cm(uint32_t echo_ns)
@@ -87,31 +92,31 @@ static int urgency(enum fuse_state s)
 	}
 }
 
-static enum fuse_state raw_state(struct fuse *f, unsigned up, int64_t now_ns)
+/* Right side: the right radar and the ultrasonic. */
+static enum fuse_state raw_right(struct fuse *f, unsigned up, int64_t now_ns)
 {
-	bool r = up & UP(SENSOR_RADAR), s = up & UP(SENSOR_SONAR), l = up & UP(SENSOR_RADAR_LEFT);
-	bool track_r = r && track_valid(f, FUSE_RIGHT, now_ns);
-	bool track_l = l && track_valid(f, FUSE_LEFT, now_ns);
+	bool r = up & UP(SENSOR_RADAR), s = up & UP(SENSOR_SONAR);
+	bool track = r && track_valid(f, FUSE_RIGHT, now_ns);
 	bool confirm = r && f->track_seen[FUSE_RIGHT] &&
 		       now_ns - f->track_ns[FUSE_RIGHT] <= FUSE_CONFIRM_NS;
 	bool zone = s && zone_occupied(f);
 	bool unconfirmed = false;
 	enum fuse_state st;
 
-	if (!r && !s && !l) {
-		st = ST_BLIND;
-	} else if (r && s) {
+	if (r && s) {
 		if (zone && (f->mode == FUSE_RADAR_PRESENCE || confirm))
 			st = ST_IN_ZONE;
-		else if (track_r || track_l)
+		else if (track)
 			st = ST_APPROACHING;
 		else
-			st = l ? ST_CLEAR : ST_DEG_CLEAR;
+			st = ST_CLEAR;
 		unconfirmed = zone && st != ST_IN_ZONE;
-	} else if (s) {			/* right radar lost */
-		st = zone ? ST_DEG_IN_ZONE : track_l ? ST_DEG_APPROACHING : ST_DEG_CLEAR;
-	} else {			/* sonar lost */
-		st = (track_r || track_l) ? ST_DEG_APPROACHING : ST_DEG_CLEAR;
+	} else if (s) {			/* radar lost: the ultrasonic alone */
+		st = zone ? ST_DEG_IN_ZONE : ST_DEG_CLEAR;
+	} else if (r) {			/* ultrasonic lost: the radar alone */
+		st = track ? ST_DEG_APPROACHING : ST_DEG_CLEAR;
+	} else {
+		st = ST_BLIND;
 	}
 
 	if (unconfirmed && !f->unconfirmed)
@@ -120,10 +125,33 @@ static enum fuse_state raw_state(struct fuse *f, unsigned up, int64_t now_ns)
 	return st;
 }
 
-enum fuse_state fuse_eval(struct fuse *f, unsigned up, int64_t now_ns)
+/* Left side: the left radar only. */
+static enum fuse_state raw_left(const struct fuse *f, unsigned up, int64_t now_ns)
 {
-	enum fuse_state raw;
+	if (!(up & UP(SENSOR_RADAR_LEFT)))
+		return ST_BLIND;
+	return track_valid(f, FUSE_LEFT, now_ns) ? ST_APPROACHING : ST_CLEAR;
+}
 
+static enum fuse_state hold(struct fuse_hold *h, enum fuse_state raw, unsigned up,
+			    int64_t hold_ns, int64_t now_ns)
+{
+	if (up == h->last_up && urgency(raw) < urgency(h->state)) {
+		if (!h->dropping) {
+			h->dropping = true;
+			h->drop_ns = now_ns;
+		}
+		if (now_ns - h->drop_ns < hold_ns)
+			return h->state;
+	}
+	h->dropping = false;
+	h->state = raw;
+	h->last_up = up;
+	return raw;
+}
+
+void fuse_eval(struct fuse *f, unsigned up, int64_t now_ns, struct fuse_out *out)
+{
 	/* A lost sensor's old readings must not count when it comes back. */
 	if (!(up & UP(SENSOR_SONAR)))
 		f->pings = 0;
@@ -132,19 +160,10 @@ enum fuse_state fuse_eval(struct fuse *f, unsigned up, int64_t now_ns)
 	if (!(up & UP(SENSOR_RADAR_LEFT)))
 		f->track_seen[FUSE_LEFT] = false;
 
-	raw = raw_state(f, up, now_ns);
-	if (up == f->last_up && urgency(raw) < urgency(f->state)) {
-		if (!f->dropping) {
-			f->dropping = true;
-			f->drop_ns = now_ns;
-		}
-		if (now_ns - f->drop_ns < f->hold_ns)
-			return f->state;
-	}
-	f->dropping = false;
-	f->state = raw;
-	f->last_up = up;
-	return raw;
+	out->right = hold(&f->side[FUSE_RIGHT], raw_right(f, up, now_ns), up & RIGHT_MASK,
+			  f->hold_ns, now_ns);
+	out->left = hold(&f->side[FUSE_LEFT], raw_left(f, up, now_ns), up & LEFT_MASK,
+			 f->hold_ns, now_ns);
 }
 
 int fuse_parse_mode(const char *s, enum fuse_radar_mode *out)

@@ -83,11 +83,13 @@ struct sonar_msg {		/* cap-sonar -> fuse-hub, 16 Hz */
 	uint32_t trigger_seq;
 };
 
+/* One state per side of the car, one per mirror LED: the right side has the
+ * radar and the ultrasonic, the left side a radar only. */
 struct alert_msg {		/* fuse-hub -> alert, on change + 2 Hz */
 	uint8_t  type;		/* MSG_ALERT */
-	uint8_t  state;		/* enum fuse_state */
+	uint8_t  state;		/* enum fuse_state, right side */
 	uint8_t  lost_mask;	/* LOST_* */
-	uint8_t  pad;
+	uint8_t  state_left;	/* enum fuse_state, left side */
 	uint32_t seq;
 	uint64_t origin_ns;	/* origin of the reading that caused this state */
 };

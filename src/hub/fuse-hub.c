@@ -75,18 +75,17 @@ drop:
 	hub->store_dropped++;
 }
 
+/* Health only, per side, until fusion is wired in (step 4): the right side has
+ * the radar and the ultrasonic, the left side a radar alone. */
 static void send_state(struct hub *hub, int64_t now)
 {
-	static const uint8_t to_fuse[] = {
-		[H_BLIND] = ST_BLIND,
-		[H_DEG]   = ST_DEG_CLEAR,
-		[H_OK]    = ST_CLEAR,
-	};
+	bool r = hub->h.up[SENSOR_RADAR], s = hub->h.up[SENSOR_SONAR];
 	struct alert_msg m;
 
 	memset(&m, 0, sizeof(m));
 	m.type = MSG_ALERT;
-	m.state = to_fuse[health_state(&hub->h)];
+	m.state = r && s ? ST_CLEAR : r || s ? ST_DEG_CLEAR : ST_BLIND;
+	m.state_left = hub->h.up[SENSOR_RADAR_LEFT] ? ST_CLEAR : ST_BLIND;
 	m.lost_mask = (uint8_t)((hub->h.up[SENSOR_RADAR] ? 0 : LOST_RADAR) |
 				(hub->h.up[SENSOR_SONAR] ? 0 : LOST_SONAR) |
 				(hub->h.up[SENSOR_RADAR_LEFT] ? 0 : LOST_RADAR_LEFT));
