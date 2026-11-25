@@ -20,11 +20,20 @@
  * (comma list) limits which are run, keeping the DESIGN order. A missing binary
  * exits 78 and is not restarted.
  *
- * Not yet: SCHED_FIFO 90 + mlockall here and FIFO 60/70/80 for the alert chain
- * (mechanism C); forcing GPIO 17/22 low when alert dies (alert step).
+ * - Stuck outputs: whenever alert exits (crash, kill or shutdown), super requests
+ *   the mirror LED and buzzer lines driven low and holds them until just before
+ *   alert is restarted (DESIGN.md §2 E), so a dead alert can't leave a warning on.
  *
- * Exit codes: 0 after SIGTERM/SIGINT, 64 bad usage, 78 bad config, 70 otherwise.
+ *   dlby-super --outputs-off   drives those lines low, releases them and exits;
+ *                              systemd's ExecStopPost, after the tree is gone.
+ *
+ * Not yet: SCHED_FIFO 90 + mlockall here and FIFO 60/70/80 for the alert chain
+ * (mechanism C).
+ *
+ * Exit codes: 0 after SIGTERM/SIGINT, 64 bad usage, 78 bad config, 70 otherwise;
+ * --outputs-off: 0, 78 bad settings or no chip, 69 GPIO failure.
  */
+#include "gpio_out.h"
 #include "ipc.h"
 #include "log.h"
 #include "msg.h"
@@ -59,7 +68,8 @@
 #define WATCHDOG_NS     1000000000LL
 #define STOP_GRACE_NS   2000000000LL
 #define MAX_IDLE_MS     1000
-#define MAX_CHILDREN    7
+#define MAX_CHILDREN    6
+#define ALERT_NAME      "alert"
 
 struct child_def {
 	const char *name;
@@ -71,8 +81,7 @@ struct child_def {
 static const struct child_def all_children[MAX_CHILDREN] = {
 	{ "store",      5, true },	/* OTHER, nice +5 (DESIGN.md §1) */
 	{ "fuse-hub",   0, false },
-	{ "alert",      0, false },
-	{ "status-lcd", 0, false },
+	{ ALERT_NAME,   0, false },
 	{ "cap-radar",  0, false },
 	{ "cap-radar-left", 0, false },	/* same binary, left radar */
 	{ "cap-sonar",  0, false },
@@ -90,6 +99,79 @@ struct child {
 
 static struct child kids[MAX_CHILDREN];
 static size_t nkids;
+
+/* The alert output lines, and super's hold on them while alert is down. */
+static struct alert_pins pins;
+static int forced_fd = -1;
+
+static bool is_alert(const struct child *c)
+{
+	return strcmp(c->def->name, ALERT_NAME) == 0;
+}
+
+/* alert is gone: drive its lines low and keep them, so nothing else can leave
+ * them high, until alert is started again. */
+static void force_outputs_off(void)
+{
+	char s[32];
+
+	alert_pins_str(&pins, s, sizeof(s));
+	if (pins.none) {
+		log_msg(LOG_I, "outputs_forced_off gpio=none");
+		return;
+	}
+	if (forced_fd >= 0)
+		return;		/* already held */
+	forced_fd = gpio_out_open(&pins, "dlby-super");
+	if (forced_fd < 0) {
+		log_msg(LOG_E, "outputs_force_failed chip=%s gpio=%s err=%s", pins.chip, s,
+			strerror(errno));
+		return;
+	}
+	log_msg(LOG_I, "outputs_forced_off gpio=%s", s);
+}
+
+/* Let go just before alert starts, so it can request the lines itself. */
+static void release_outputs(void)
+{
+	if (forced_fd < 0)
+		return;
+	if (close(forced_fd) < 0)
+		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
+	forced_fd = -1;
+}
+
+/* dlby-super --outputs-off: lines low, released, exit. */
+static int outputs_off(void)
+{
+	char s[32];
+	int fd, rc;
+
+	if (alert_pins_from_env(&pins) < 0) {
+		log_msg(LOG_E, "bad_config %s=%s %s=%s %s=%s %s=%s", ALERT_CHIP_ENV,
+			getenv(ALERT_CHIP_ENV) ? getenv(ALERT_CHIP_ENV) : "-", ALERT_LED_RIGHT_ENV,
+			getenv(ALERT_LED_RIGHT_ENV) ? getenv(ALERT_LED_RIGHT_ENV) : "-",
+			ALERT_LED_LEFT_ENV, getenv(ALERT_LED_LEFT_ENV) ? getenv(ALERT_LED_LEFT_ENV) : "-",
+			ALERT_BUZZ_ENV, getenv(ALERT_BUZZ_ENV) ? getenv(ALERT_BUZZ_ENV) : "-");
+		return EX_CONFIG;
+	}
+	alert_pins_str(&pins, s, sizeof(s));
+	if (pins.none) {
+		log_msg(LOG_I, "outputs_off gpio=none");
+		return EX_OK;
+	}
+	fd = gpio_out_open(&pins, "dlby-super");
+	if (fd < 0) {
+		rc = gpio_out_exit_code(errno);
+		log_msg(LOG_E, "outputs_off_failed chip=%s gpio=%s err=%s", pins.chip, s,
+			strerror(errno));
+		return rc;
+	}
+	if (close(fd) < 0)
+		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
+	log_msg(LOG_I, "outputs_off gpio=%s", s);
+	return EX_OK;
+}
 
 /* Shutdown progress: TERM the others, then store, then KILL what remains. */
 struct shutdown {
@@ -228,6 +310,8 @@ static void start_child(struct child *c, int64_t now)
 	int sv[2];
 	pid_t pid;
 
+	if (is_alert(c))
+		release_outputs();
 	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
 		goto fail;
 	pid = fork();
@@ -249,6 +333,8 @@ static void start_child(struct child *c, int64_t now)
 
 fail:
 	log_msg(LOG_E, "start_failed name=%s err=%s", c->def->name, strerror(errno));
+	if (is_alert(c))
+		force_outputs_off();	/* it never ran: take the lines back */
 	sup_on_start(&c->sm, now);
 	decide(c, W_EXITCODE(EX_SOFTWARE, 0), now);
 }
@@ -322,10 +408,11 @@ static void on_child_exit(struct child *c, int status, int64_t now, bool stoppin
 		log_msg(WEXITSTATUS(status) == 0 ? LOG_I : LOG_E, "child_exit name=%s code=%d",
 			c->def->name, WEXITSTATUS(status));
 	}
+	/* Also while stopping: a killed alert can't drive its own lines low. */
+	if (is_alert(c))
+		force_outputs_off();
 	if (stopping)
 		return;
-	/* TODO(alert step): if this is alert, drive GPIO 17/22 low and hold them
-	 * until it is restarted (DESIGN.md §2 E "Stuck outputs"). */
 	decide(c, status, now);
 }
 
@@ -610,10 +697,11 @@ int main(int argc, char **argv)
 	size_t i, nfds;
 	ssize_t r;
 
-	(void)argv;
 	log_init("dlby-super");
+	if (argc == 2 && strcmp(argv[1], "--outputs-off") == 0)
+		return outputs_off();
 	if (argc > 1) {
-		log_msg(LOG_E, "usage args=none");
+		log_msg(LOG_E, "usage args=none|--outputs-off");
 		return EX_USAGE;
 	}
 	bin_dir = getenv(BIN_DIR_ENV);
@@ -621,6 +709,15 @@ int main(int argc, char **argv)
 		bin_dir = BIN_DIR_DEFAULT;
 	if (select_children(bin_dir) < 0)
 		return EX_CONFIG;
+	/* alert reads the same settings; a bad one would stop it too. */
+	if (alert_pins_from_env(&pins) < 0) {
+		log_msg(LOG_E, "bad_config %s=%s %s=%s %s=%s %s=%s", ALERT_CHIP_ENV,
+			getenv(ALERT_CHIP_ENV) ? getenv(ALERT_CHIP_ENV) : "-", ALERT_LED_RIGHT_ENV,
+			getenv(ALERT_LED_RIGHT_ENV) ? getenv(ALERT_LED_RIGHT_ENV) : "-",
+			ALERT_LED_LEFT_ENV, getenv(ALERT_LED_LEFT_ENV) ? getenv(ALERT_LED_LEFT_ENV) : "-",
+			ALERT_BUZZ_ENV, getenv(ALERT_BUZZ_ENV) ? getenv(ALERT_BUZZ_ENV) : "-");
+		return EX_CONFIG;
+	}
 	for (i = 0; i < nkids; i++) {
 		strncat(names, i ? "," : "", sizeof(names) - strlen(names) - 1);
 		strncat(names, kids[i].def->name, sizeof(names) - strlen(names) - 1);
@@ -746,6 +843,7 @@ int main(int argc, char **argv)
 out:
 	for (i = 0; i < nkids; i++)
 		close_hb(&kids[i]);
+	release_outputs();	/* ExecStopPost drives them low once the tree is gone */
 	if (sfd >= 0 && close(sfd) < 0)
 		log_msg(LOG_W, "close_failed err=%s", strerror(errno));
 	restarts = 0;

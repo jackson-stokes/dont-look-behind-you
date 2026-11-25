@@ -18,7 +18,9 @@ TimeoutStopSec=6
 
 ExecStart=/opt/dlby/bin/dlby-super
 Environment=DLBY_BIN_DIR=/opt/dlby/bin
-# TODO(alert step): ExecStopPost=/opt/dlby/bin/dlby-super --outputs-off
+# After every stop, crash or watchdog kill, once the tree is gone: mirror LEDs
+# and buzzer driven low, so a dark LED means "not running" (DESIGN.md §2 E).
+ExecStopPost=/opt/dlby/bin/dlby-super --outputs-off
 
 # /run/dlby (sockets) and /var/lib/dlby (the store log).
 RuntimeDirectory=dlby

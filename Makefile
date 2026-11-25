@@ -28,16 +28,19 @@ SUPER_LIB := $(BUILD)/libdlby_super.a
 CAP_HDR := $(wildcard src/capture/*.h)
 CAP_LIB := $(BUILD)/libdlby_capture.a
 
-APP_HDR  := $(COMMON_HDR) $(HUB_HDR) $(STORE_HDR) $(SUPER_HDR) $(CAP_HDR)
-APP_INC  := -Isrc/hub -Isrc/store -Isrc/super -Isrc/capture
-APP_LIBS := $(HUB_LIB) $(STORE_LIB) $(SUPER_LIB) $(CAP_LIB) $(LIB)
+ALERT_HDR := $(wildcard src/alert/*.h)
+ALERT_LIB := $(BUILD)/libdlby_alert.a
+
+APP_HDR  := $(COMMON_HDR) $(HUB_HDR) $(STORE_HDR) $(SUPER_HDR) $(CAP_HDR) $(ALERT_HDR)
+APP_INC  := -Isrc/hub -Isrc/store -Isrc/super -Isrc/capture -Isrc/alert
+APP_LIBS := $(HUB_LIB) $(STORE_LIB) $(SUPER_LIB) $(CAP_LIB) $(ALERT_LIB) $(LIB)
 
 # Deployed to the Pi by `make install`.
 PRODUCT := $(BUILD)/dlby-super $(BUILD)/store $(BUILD)/fuse-hub $(BUILD)/cap-radar \
-	$(BUILD)/cap-sonar
+	$(BUILD)/cap-sonar $(BUILD)/alert
 
 BINS := $(PRODUCT) $(BUILD)/tools/fake-sensors $(BUILD)/tools/fake-child \
-	$(BUILD)/tools/dlby-logcat $(BUILD)/tools/fake-ld2451
+	$(BUILD)/tools/dlby-logcat $(BUILD)/tools/fake-ld2451 $(BUILD)/tools/send-alert
 
 TEST_SRC := $(wildcard tests/test_*.c)
 TESTS    := $(TEST_SRC:tests/%.c=$(BUILD)/tests/%)
@@ -117,6 +120,17 @@ $(BUILD)/cap-radar: $(BUILD)/obj/capture/cap-radar.o $(CAP_LIB) $(LIB)
 $(BUILD)/cap-sonar: $(BUILD)/obj/capture/cap-sonar.o $(CAP_LIB) $(LIB)
 	$(CC) $(ALL_CFLAGS) -o $@ $^
 
+$(BUILD)/obj/alert/%.o: src/alert/%.c $(ALERT_HDR) $(COMMON_HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) -Isrc/alert $(ALL_CFLAGS) -c -o $@ $<
+
+# alert's testable parts (everything but main), linked into the unit tests.
+$(ALERT_LIB): $(BUILD)/obj/alert/pattern.o
+	$(AR) rcs $@ $^
+
+$(BUILD)/alert: $(BUILD)/obj/alert/alert.o $(ALERT_LIB) $(LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $^
+
 $(BUILD)/tools/%: tools/%.c $(APP_HDR) $(APP_LIBS)
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(APP_INC) $(ALL_CFLAGS) -o $@ $< $(APP_LIBS)
@@ -132,6 +146,7 @@ run-tests: $(TESTS) $(BINS)
 	@echo "== tests/super_e2e.sh"; sh tests/super_e2e.sh $(BUILD)
 	@echo "== tests/capture_e2e.sh"; sh tests/capture_e2e.sh $(BUILD)
 	@echo "== tests/report_e2e.sh"; sh tests/report_e2e.sh $(BUILD)
+	@echo "== tests/alert_e2e.sh"; sh tests/alert_e2e.sh $(BUILD)
 	@echo "all tests passed ($(BUILD))"
 
 test: check-boundary run-tests

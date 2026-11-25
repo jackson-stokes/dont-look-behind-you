@@ -3,31 +3,36 @@
 #
 # Children: the real store and fuse-hub; fake-sensors as cap-sonar and cap-radar-left,
 # so real sonar and left-radar data flows -> fuse-hub -> store; fake-child as alert
-# (crashes once at 1 s), status-lcd (exits 78) and cap-radar (hangs once at 1 s,
-# ignoring SIGTERM).
+# (crashes once at 1 s) and cap-radar (hangs once at 1 s, ignoring SIGTERM).
 #
 # Phase 1, one super:
 #   start order and first heartbeats; kill -SEGV fuse-hub -> new hub within 1 s and
-#   sonar keeps reaching store; kill -KILL store -> restarted; alert crash -> restart;
-#   status-lcd 78 -> disabled; cap-radar hang -> heartbeat_lost, KILL, restart;
+#   sonar keeps reaching store; kill -KILL store -> restarted; alert crash -> its
+#   outputs forced off, restart; cap-radar hang -> heartbeat_lost, KILL, restart;
 #   inherited fds only 0-3; TERM super -> store stopped last, exit 0, no child left.
 # Phase 2: kill -KILL super -> every child exits within 1 s (PDEATHSIG, hb EOF).
+# Phase 3: a child exiting 78 (fake-child as cap-radar-left) -> disabled, never
+#   restarted, inherited fds only 0-3; TERM super -> exit 0.
 set -u
 B=$(cd "$1" && pwd) || exit 1
 T=$(mktemp -d /tmp/dlby-super-e2e-XXXXXX) || exit 1
 export DLBY_RUN_DIR="$T/run" DLBY_LOG_DIR="$T/log" DLBY_BIN_DIR="$T/bin" FAKE_STATE_DIR="$T/state"
-export FAKE_alert=crash_once:1 FAKE_status_lcd=exit:78 FAKE_cap_radar=hang_once:1
+export FAKE_alert=crash_once:1 FAKE_cap_radar=hang_once:1
+# No GPIO in the test: super logs the forced-off outputs as gpio=none.
+export DLBY_ALERT_CHIP=none
 # The SIGSEGVs here are intentional (fake alert, kill -SEGV on the hub): they must
 # kill by signal as in production, not become an ASan report and exit 1. Only this
 # test sets it; ASan's memory checks stay on.
 export ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}handle_segv=0"
 LOG="$T/super1.log"
 LOG2="$T/super2.log"
+LOG3="$T/super3.log"
 super=""
 
-# Every child pid either super started.
+# Every child pid any super started.
 all_pids() {
-	cat "$LOG" "$LOG2" 2>/dev/null | sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=//p'
+	cat "$LOG" "$LOG2" "$LOG3" 2>/dev/null |
+		sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=//p'
 }
 
 cleanup() {
@@ -41,7 +46,7 @@ trap cleanup EXIT
 
 fail() {
 	echo "super_e2e: FAIL: $*"
-	for f in "$LOG" "$LOG2"; do
+	for f in "$LOG" "$LOG2" "$LOG3"; do
 		[ -f "$f" ] || continue
 		echo "---- $f"
 		cat "$f"
@@ -96,7 +101,7 @@ mkdir -p "$T/bin" "$T/state" || fail "mkdir"
 ln -s "$B/store" "$T/bin/store" && ln -s "$B/fuse-hub" "$T/bin/fuse-hub" &&
 	ln -s "$B/tools/fake-sensors" "$T/bin/cap-sonar" &&
 	ln -s "$B/tools/fake-sensors" "$T/bin/cap-radar-left" || fail "symlinks"
-for n in alert status-lcd cap-radar; do
+for n in alert cap-radar; do
 	ln -s "$B/tools/fake-child" "$T/bin/$n" || fail "symlink $n"
 done
 
@@ -107,8 +112,8 @@ for n in store fuse-hub alert cap-radar cap-radar-left cap-sonar; do
 	wait_for "^dlby-super\[[0-9]+\] I first_heartbeat name=$n " "$LOG" 3000 ||
 		fail "no first_heartbeat for $n"
 done
-order=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=\([^ ]*\) .*/\1/p' "$LOG" | head -n 7 | tr '\n' ' ')
-[ "$order" = "store fuse-hub alert status-lcd cap-radar cap-radar-left cap-sonar " ] ||
+order=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=\([^ ]*\) .*/\1/p' "$LOG" | head -n 6 | tr '\n' ' ')
+[ "$order" = "store fuse-hub alert cap-radar cap-radar-left cap-sonar " ] ||
 	fail "start order: $order"
 
 # fuse-hub crash: a new hub must be up within 1 s (§6 E restart).
@@ -142,6 +147,12 @@ grep -q -E '^dlby-super\[[0-9]+\] E child_exit name=store signal=KILL$' "$LOG" |
 grep -q -E '^dlby-super\[[0-9]+\] E child_exit name=alert signal=SEGV$' "$LOG" ||
 	fail "no child_exit name=alert signal=SEGV"
 wait_count '^dlby-super\[[0-9]+\] I child_start name=alert ' "$LOG" 2 2000 || fail "alert not restarted"
+# Its outputs were forced off between the crash and the restart (DESIGN.md §2 E).
+crash_at=$(grep -n -E '^dlby-super\[[0-9]+\] E child_exit name=alert signal=SEGV$' "$LOG" | cut -d: -f1)
+off_at=$(grep -n -E '^dlby-super\[[0-9]+\] I outputs_forced_off gpio=none$' "$LOG" | head -n 1 | cut -d: -f1)
+restart_at=$(grep -n -E '^dlby-super\[[0-9]+\] I child_start name=alert ' "$LOG" | sed -n 2p | cut -d: -f1)
+[ -n "$off_at" ] && [ "$off_at" -gt "$crash_at" ] && [ "$off_at" -lt "$restart_at" ] ||
+	fail "outputs not forced off between alert's crash and restart"
 
 # cap-radar hung at 1 s: heartbeat lost after 5 s, TERM ignored, KILL, restart.
 wait_for '^dlby-super\[[0-9]+\] W child_kill name=cap-radar signal=KILL$' "$LOG" 9000 ||
@@ -166,18 +177,11 @@ for p in $(all_pids); do
 	alive "$p" && fail "child $p outlived dlby-super"
 done
 
-# status-lcd exited 78: logged once, never restarted.
-grep -q -E '^dlby-super\[[0-9]+\] E child_exit name=status-lcd code=78$' "$LOG" ||
-	fail "no child_exit name=status-lcd code=78"
-grep -q -E '^dlby-super\[[0-9]+\] E child_disabled name=status-lcd code=78$' "$LOG" ||
-	fail "no child_disabled for status-lcd"
-[ "$(count '^dlby-super\[[0-9]+\] I child_start name=status-lcd ' "$LOG")" -eq 1 ] ||
-	fail "status-lcd was restarted"
-
-# Each fake child, first runs and restarts alike, inherited only 0-3.
-nfds=$(count '^(alert|status-lcd|cap-radar)\[[0-9]+\] I fds open=' "$LOG")
-[ "$nfds" -ge 5 ] || fail "want >= 5 fds lines, got $nfds"
-bad=$(grep -E '^(alert|status-lcd|cap-radar)\[[0-9]+\] I fds open=' "$LOG" | grep -v 'open=0,1,2,3$')
+# Each fake child, first runs and restarts alike (alert x2, cap-radar x2), inherited
+# only 0-3. The exit-78 child's line is checked in phase 3.
+nfds=$(count '^(alert|cap-radar)\[[0-9]+\] I fds open=' "$LOG")
+[ "$nfds" -ge 4 ] || fail "want >= 4 fds lines, got $nfds"
+bad=$(grep -E '^(alert|cap-radar)\[[0-9]+\] I fds open=' "$LOG" | grep -v 'open=0,1,2,3$')
 [ -z "$bad" ] || fail "leaked fds: $bad"
 
 sum=$("$B/tools/dlby-logcat" "$DLBY_LOG_DIR") || fail "dlby-logcat: $sum"
@@ -203,6 +207,31 @@ for p in $pids2; do
 	done
 done
 
-cat "$LOG" "$LOG2" | grep -q -E 'AddressSanitizer|LeakSanitizer|runtime error' && fail "sanitizer report"
+# ---- phase 3: a child that exits 78 (EX_CONFIG): logged once, never restarted.
+# (Was status-lcd's job in phase 1 before status-lcd was cut.)
+mkdir -p "$T/bin78" && ln -s "$B/tools/fake-child" "$T/bin78/cap-radar-left" ||
+	fail "phase 3: symlink"
+DLBY_BIN_DIR="$T/bin78" DLBY_CHILDREN=cap-radar-left FAKE_cap_radar_left=exit:78 \
+	"$B/dlby-super" 2>"$LOG3" &
+super=$!
+wait_for '^dlby-super\[[0-9]+\] E child_disabled name=cap-radar-left code=78$' "$LOG3" 3000 ||
+	fail "phase 3: no child_disabled for cap-radar-left"
+grep -q -E '^dlby-super\[[0-9]+\] E child_exit name=cap-radar-left code=78$' "$LOG3" ||
+	fail "phase 3: no child_exit name=cap-radar-left code=78"
+# Ten times the first restart backoff (100 ms): a restart would have happened by now.
+sleep 1
+[ "$(count '^dlby-super\[[0-9]+\] I child_start name=cap-radar-left ' "$LOG3")" -eq 1 ] ||
+	fail "phase 3: cap-radar-left was restarted"
+grep -q -E '^cap-radar-left\[[0-9]+\] I fds open=0,1,2,3$' "$LOG3" ||
+	fail "phase 3: exit-78 child inherited more than 0-3"
+kill -TERM "$super" || fail "phase 3: super already gone"
+wait "$super"
+rc=$?
+super=""
+[ "$rc" -eq 0 ] || fail "phase 3: dlby-super exited $rc"
+grep -q -E '^dlby-super\[[0-9]+\] I exit code=0$' "$LOG3" || fail "phase 3: no clean exit line"
+
+cat "$LOG" "$LOG2" "$LOG3" | grep -q -E 'AddressSanitizer|LeakSanitizer|runtime error' &&
+	fail "sanitizer report"
 
 echo "super_e2e: ok (hub_restart_ms=$restart_ms sonar=$s1->$s2 $sum)"
