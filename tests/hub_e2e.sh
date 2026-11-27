@@ -98,7 +98,8 @@ hub=""
 [ "$rc" -eq 0 ] || fail "hub exited $rc"
 
 grep -q -E 'AddressSanitizer|LeakSanitizer|runtime error' "$LOG" && fail "sanitizer report"
-bad=$(grep -v -E '^fuse-hub\[[0-9]+\] [IWE] [a-z_]+( [a-z_]+=[^ ]*)*$' "$LOG")
+# Keys start with a letter and may hold digits (p99_us); values have no spaces.
+bad=$(grep -v -E '^fuse-hub\[[0-9]+\] [IWE] [a-z_]+( [a-z][a-z0-9_]*=[^ ]*)*$' "$LOG")
 [ -z "$bad" ] || fail "malformed log line: $bad"
 
 up_r=$(line_of ' I sensor_up name=radar$')
@@ -131,10 +132,12 @@ m=$(echo "$ex" | sed -E 's/.* sonar=([0-9]+) .*/\1/')
 [ "$m" -ge 15 ] && [ "$m" -le 18 ] || fail "sonar count $m not in 15-18"
 
 # ---- phase 2: fusion -> alert, cyclist passes.
-DLBY_ALERT_CHIP=none "$B/alert" 2>"$ALOG" &
+LAT="$T/lat"
+mkdir -p "$LAT" || fail "phase 2: mkdir"
+DLBY_ALERT_CHIP=none DLBY_LAT_DIR="$LAT" "$B/alert" 2>"$ALOG" &
 alert=$!
 wait_for '^alert\[[0-9]+\] I start ' "$ALOG" 3000 || fail "phase 2: alert did not start"
-"$B/fuse-hub" 2>"$LOG2" &
+DLBY_LAT_DIR="$LAT" "$B/fuse-hub" 2>"$LOG2" &
 hub=$!
 wait_for '^fuse-hub\[[0-9]+\] I start sock=.* fuse=tracks hold_ms=500$' "$LOG2" 3000 ||
 	fail "phase 2: hub did not start in tracks mode"
@@ -178,7 +181,7 @@ rc=$?
 alert=""
 [ "$rc" -eq 0 ] || fail "phase 2: alert exited $rc"
 
-bad=$(grep -v -E '^fuse-hub\[[0-9]+\] [IWE] [a-z_]+( [a-z_]+=[^ ]*)*$' "$LOG2")
+bad=$(grep -v -E '^fuse-hub\[[0-9]+\] [IWE] [a-z_]+( [a-z][a-z0-9_]*=[^ ]*)*$' "$LOG2")
 [ -z "$bad" ] || fail "phase 2: malformed log line: $bad"
 right=" $(states right "$LOG2")"
 left_s=" $(states left "$LOG2")"
@@ -202,6 +205,21 @@ c=$(grep -E '^fuse-hub\[[0-9]+\] I counts .* final=1$' "$LOG2")
 [ "$(field fuse "$c")" = tracks ] && [ "$(field right_in_zone "$c")" -ge 1 ] &&
 	[ "$(field left_approach "$c")" -ge 1 ] && [ "$(field alerts "$c")" -gt 0 ] &&
 	[ "$(field alert_dropped "$c")" = 0 ] || fail "phase 2: hub counts: $c"
+# Latency: capture -> hub for every sensor, origin -> outputs at alert (sampled on
+# each rise in urgency: right APPROACHING and IN_ZONE, left APPROACHING, at least).
+for s in cap_radar cap_sonar cap_radar_left; do
+	latl=$(grep -E "^fuse-hub\[[0-9]+\] I latency name=$s .* final=1$" "$LOG2")
+	[ -n "$latl" ] && [ "$(field n "$latl")" -gt 0 ] && [ "$(field neg "$latl")" = 0 ] ||
+		fail "phase 2: hub latency $s: $latl"
+	ls "$LAT"/fuse-hub-$s-*.hist >/dev/null 2>&1 || fail "phase 2: no fuse-hub $s histogram"
+done
+latl=$(grep -E '^alert\[[0-9]+\] I latency name=origin_gpio .* final=1$' "$ALOG")
+[ -n "$latl" ] && [ "$(field n "$latl")" -ge 2 ] && [ "$(field neg "$latl")" = 0 ] ||
+	fail "phase 2: alert latency: $latl"
+for h in origin_gpio hub_gpio; do
+	ls "$LAT"/alert-$h-*.hist >/dev/null 2>&1 || fail "phase 2: no alert $h histogram"
+done
+alat=$(echo "$latl" | sed 's/^.* I latency name=origin_gpio //; s/ final=1$//')
 cat "$LOG2" "$ALOG" | grep -q -E 'AddressSanitizer|LeakSanitizer|runtime error' &&
 	fail "phase 2: sanitizer report"
 
@@ -221,4 +239,4 @@ for kv in DLBY_FUSE_RADAR=bogus DLBY_FUSE_HOLD_MS=abc DLBY_FUSE_HOLD_MS=10001; d
 	grep -q 'bad_config DLBY_FUSE_RADAR=' "$T/bad.log" || fail "phase 3: $kv: no bad_config line"
 done
 
-echo "hub_e2e: ok (radar=$n radar_left=$l sonar=$m right=[$(echo $right)] left=[$(echo $left_s)] hub_lost_ms=$ms)"
+echo "hub_e2e: ok (radar=$n radar_left=$l sonar=$m right=[$(echo $right)] left=[$(echo $left_s)] hub_lost_ms=$ms alert_origin_gpio=[$alat])"

@@ -317,7 +317,7 @@ static void test_check_msg_length_vs_type(void)
 		CHECK(ipc_check_msg(b, msg_size(types[i]), &rej) == types[i]);
 	}
 	CHECK(msg_size(MSG_RADAR) == 64 && msg_size(MSG_SONAR) == 24);
-	CHECK(msg_size(MSG_ALERT) == 16 && msg_size(MSG_HB) == 8);
+	CHECK(msg_size(MSG_ALERT) == 24 && msg_size(MSG_HB) == 8);	/* 24 since hub_ns */
 	CHECK(msg_size(MSG_GAP) == 24);
 	CHECK(rej == 4);
 }

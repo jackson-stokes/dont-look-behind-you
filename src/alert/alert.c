@@ -21,6 +21,7 @@
 #include "gpio_out.h"
 #include "hb.h"
 #include "ipc.h"
+#include "lathist.h"
 #include "log.h"
 #include "msg.h"
 #include "pattern.h"
@@ -58,6 +59,14 @@ struct alert {
 	bool     have_hub, hub_lost;
 	int64_t  last_rx_ns, start_ns;
 	uint64_t msgs, rejected, hub_lost_n, changes[2], writes, write_errs;
+
+	/* Latency, sampled when a side's warning gets more urgent: origin -> outputs
+	 * (end to end) and hub -> outputs. pend holds a rise until the outputs show it. */
+	struct lathist lat_e2e, lat_hub;
+	struct {
+		bool     on;
+		uint64_t origin_ns, hub_ns;
+	} pend[2];
 	struct log_limit lim_bad, lim_full, lim_accept, lim_write, lim_trace;
 };
 
@@ -110,6 +119,61 @@ static void drive(struct alert *a, int64_t now, unsigned bits)
 	a->out_known = true;
 	a->writes++;
 	trace(a, now, bits);
+}
+
+/* A rise in urgency (pattern_urgency) is always caused by a reading, so its
+ * origin_ns is a real reading time. Not from HUB_LOST: the first message after
+ * the hub comes back may be a refresh carrying an old origin. */
+static void note_rise(struct alert *a, int side, unsigned st, const struct alert_msg *m)
+{
+	if (a->state[side] == PAT_HUB_LOST ||
+	    pattern_urgency(st) <= pattern_urgency(a->state[side]))
+		return;
+	a->pend[side].on = true;
+	a->pend[side].origin_ns = m->origin_ns;
+	a->pend[side].hub_ns = m->hub_ns;
+}
+
+/* After drive(): the outputs now show every pending rise. */
+static void record_rises(struct alert *a)
+{
+	int64_t t = -1;
+	int s;
+
+	for (s = 0; s < 2; s++) {
+		if (!a->pend[s].on)
+			continue;
+		if (t < 0)
+			t = dlby_now_ns();
+		if (t >= 0) {
+			lathist_add(&a->lat_e2e, t - (int64_t)a->pend[s].origin_ns);
+			lathist_add(&a->lat_hub, t - (int64_t)a->pend[s].hub_ns);
+		}
+		a->pend[s].on = false;
+	}
+}
+
+static void log_latency(const struct alert *a, bool final)
+{
+	char buf[256];
+
+	lathist_fmt(&a->lat_e2e, buf, sizeof(buf));
+	log_msg(LOG_I, "latency name=origin_gpio %s%s", buf, final ? " final=1" : "");
+	lathist_fmt(&a->lat_hub, buf, sizeof(buf));
+	log_msg(LOG_I, "latency name=hub_gpio %s%s", buf, final ? " final=1" : "");
+}
+
+/* $DLBY_LAT_DIR set: both histograms to files, for tools/lat-report.py. */
+static void dump_latency(const struct alert *a)
+{
+	const char *dir = getenv(LATHIST_DIR_ENV);
+
+	if (!dir || !*dir)
+		return;
+	if (lathist_dump(&a->lat_e2e, dir, "alert", "origin_gpio") < 0)
+		log_msg(LOG_W, "lat_dump_failed dir=%s name=origin_gpio err=%s", dir, strerror(errno));
+	if (lathist_dump(&a->lat_hub, dir, "alert", "hub_gpio") < 0)
+		log_msg(LOG_W, "lat_dump_failed dir=%s name=hub_gpio err=%s", dir, strerror(errno));
 }
 
 static void set_state(struct alert *a, int side, unsigned st, int64_t now)
@@ -233,6 +297,8 @@ static void read_client(struct alert *a, int i, int64_t now)
 		log_msg(LOG_I, "hub_back");
 	}
 	a->hub_lost = false;
+	note_rise(a, SIDE_R, m.state, &m);
+	note_rise(a, SIDE_L, m.state_left, &m);
 	set_state(a, SIDE_R, m.state, now);
 	set_state(a, SIDE_L, m.state_left, now);
 }
@@ -414,6 +480,7 @@ int main(void)
 
 		check_hub(&a, now);
 		drive(&a, now, levels(&a, now));
+		record_rises(&a);
 
 		/* From this loop, never a side thread: a stuck loop goes quiet. */
 		if ((pfd[2].revents && hb_readable(&hb) < 0) || hb_tick(&hb, now) < 0) {
@@ -421,8 +488,10 @@ int main(void)
 			rc = EX_OK;
 			goto out;
 		}
-		if (report_due(&rep, now))
+		if (report_due(&rep, now)) {
 			log_counts(&a, &rep, false);
+			log_latency(&a, false);
+		}
 	}
 
 out:
@@ -447,6 +516,8 @@ out:
 	if (rep_ok) {
 		report_final(&rep);
 		log_counts(&a, &rep, true);
+		log_latency(&a, true);
+		dump_latency(&a);
 	}
 	log_msg(rc == EX_OK ? LOG_I : LOG_E, "exit code=%d", rc);
 	return rc;

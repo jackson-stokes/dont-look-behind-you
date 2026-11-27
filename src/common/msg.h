@@ -92,6 +92,8 @@ struct alert_msg {		/* fuse-hub -> alert, on change + 2 Hz */
 	uint8_t  state_left;	/* enum fuse_state, left side */
 	uint32_t seq;
 	uint64_t origin_ns;	/* origin of the reading that caused this state */
+	uint64_t hub_ns;	/* when fuse-hub sent it: splits latency into
+				 * capture -> hub and hub -> alert */
 };
 
 struct gap_msg {		/* fuse-hub -> store, on reconnect after drops */
@@ -115,7 +117,8 @@ struct hb_msg {
 static_assert(sizeof(struct radar_target) == 8, "radar_target size");
 static_assert(sizeof(struct radar_msg) == 64, "radar_msg size");
 static_assert(sizeof(struct sonar_msg) == 24, "sonar_msg size");
-static_assert(sizeof(struct alert_msg) == 16, "alert_msg size");
+static_assert(sizeof(struct alert_msg) == 24, "alert_msg size");
+static_assert(offsetof(struct alert_msg, hub_ns) == 16, "alert_msg hub_ns");
 static_assert(sizeof(struct hb_msg) == 8, "hb_msg size");
 static_assert(sizeof(struct gap_msg) == 24, "gap_msg size");
 static_assert(offsetof(struct radar_msg, side) == 2, "radar_msg side");

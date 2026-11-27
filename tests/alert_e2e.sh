@@ -14,6 +14,8 @@ set -u
 B=$(cd "$1" && pwd) || exit 1
 T=$(mktemp -d /tmp/dlby-alert-e2e-XXXXXX) || exit 1
 export DLBY_RUN_DIR="$T/run" DLBY_ALERT_CHIP=none DLBY_ALERT_TRACE="$T/trace" DLBY_REPORT_S=1
+export DLBY_LAT_DIR="$T/lat"
+mkdir -p "$DLBY_LAT_DIR" || exit 1
 LOG="$T/alert.log"
 TR="$T/trace"
 alert=""
@@ -109,6 +111,21 @@ c=$(grep -E '^alert\[[0-9]+\] I counts .* final=1$' "$LOG")
 [ "$(field right "$c")" = CLEAR ] && [ "$(field left "$c")" = CLEAR ] || fail "final states: $c"
 [ "$(tail -n 1 "$TR" | cut -d' ' -f2-)" = "0 0 0" ] || fail "outputs not off at exit: $(tail -n 1 "$TR")"
 tail -n 1 "$LOG" | grep -q -E '^alert\[[0-9]+\] I exit code=0$' || fail "exit line not last"
+
+# Latency: sampled only when a side's warning got more urgent. The script has
+# exactly two such rises (right CLEAR->IN_ZONE, left CLEAR->APPROACHING); every
+# change out of HUB_LOST (start, hub_back) and every fall adds none.
+for h in origin_gpio hub_gpio; do
+	l=$(grep -E "^alert\[[0-9]+\] I latency name=$h .* final=1$" "$LOG")
+	[ -n "$l" ] || fail "no final latency line for $h"
+	[ "$(field n "$l")" = 2 ] && [ "$(field neg "$l")" = 0 ] || fail "latency $h: $l"
+	awk -v m="$(field max_us "$l")" 'BEGIN { exit !(m < 1000000) }' || fail "latency $h max: $l"
+	f=$(ls "$DLBY_LAT_DIR"/alert-$h-*.hist 2>/dev/null)
+	[ -n "$f" ] || fail "no $h histogram file"
+	sum=$(awk '!/^#/ { s += $3 } END { print s + 0 }' "$f")
+	[ "$sum" = 2 ] || fail "$h histogram counts sum to $sum, want 2"
+	head -n 1 "$f" | grep -q "^# lathist name=$h n=2 " || fail "$h histogram header: $(head -n 1 "$f")"
+done
 
 # Bad settings: 78, so dlby-super disables alert rather than restarting it.
 for kv in DLBY_ALERT_LED_LEFT=17 DLBY_ALERT_BUZZ=abc DLBY_REPORT_S=0; do

@@ -26,6 +26,7 @@
 #include "hb.h"
 #include "health.h"
 #include "ipc.h"
+#include "lathist.h"
 #include "log.h"
 #include "msg.h"
 #include "report.h"
@@ -74,7 +75,41 @@ struct hub {
 	struct ipc_conn alert;
 	uint64_t alerts, alert_dropped, alert_pending;
 	uint64_t right_approach, right_in_zone, left_approach;	/* entries */
+
+	struct lathist lat[SENSOR_N];	/* capture -> hub, per sensor */
 };
+
+static const char *const lat_name[SENSOR_N] = {
+	[SENSOR_RADAR]      = "cap_radar",
+	[SENSOR_SONAR]      = "cap_sonar",
+	[SENSOR_RADAR_LEFT] = "cap_radar_left",
+};
+
+/* One line per histogram, after each counts line. */
+static void log_latency(const struct hub *hub, bool final)
+{
+	char buf[256];
+	int s;
+
+	for (s = 0; s < SENSOR_N; s++) {
+		lathist_fmt(&hub->lat[s], buf, sizeof(buf));
+		log_msg(LOG_I, "latency name=%s %s%s", lat_name[s], buf, final ? " final=1" : "");
+	}
+}
+
+/* $DLBY_LAT_DIR set: every histogram to a file, for tools/lat-report.py. */
+static void dump_latency(const struct hub *hub)
+{
+	const char *dir = getenv(LATHIST_DIR_ENV);
+	int s;
+
+	if (!dir || !*dir)
+		return;
+	for (s = 0; s < SENSOR_N; s++)
+		if (lathist_dump(&hub->lat[s], dir, "fuse-hub", lat_name[s]) < 0)
+			log_msg(LOG_W, "lat_dump_failed dir=%s name=%s err=%s", dir, lat_name[s],
+				strerror(errno));
+}
 
 static void store_send(struct hub *hub, const void *buf, size_t len, int64_t now)
 {
@@ -103,7 +138,12 @@ drop:
 /* Same policy as store_send: never block, count drops, say when it's back. */
 static void alert_send(struct hub *hub, const struct alert_msg *m, int64_t now)
 {
-	if (ipc_send(&hub->alert, m, sizeof(*m), now) < 0) {
+	struct alert_msg out = *m;
+	int64_t t = dlby_now_ns();
+
+	/* As late as possible, so hub -> alert latency starts at the send. */
+	out.hub_ns = (uint64_t)(t >= 0 ? t : now);
+	if (ipc_send(&hub->alert, &out, sizeof(out), now) < 0) {
 		hub->alert_pending++;
 		hub->alert_dropped++;
 		return;
@@ -180,6 +220,7 @@ static void update_fusion(struct hub *hub, int64_t now)
 	m.seq = hub->out_seq++;
 	/* The reading that caused it; a timer-caused change carries the hub's time. */
 	m.origin_ns = (uint64_t)(hub->pass_origin ? hub->pass_origin : now);
+	m.hub_ns = (uint64_t)now;	/* alert_send stamps its own copy at the send */
 	hub->shown = m;
 	hub->shown_valid = true;
 	store_send(hub, &m, sizeof(m), now);
@@ -324,6 +365,9 @@ static void read_client(struct hub *hub, int i, int64_t now)
 	}
 	c->sensor = s;
 	hub->rx[s]++;
+	/* capture -> hub. For the sonar this includes up to one 60 ms ping period:
+	 * its origin is the kernel's echo-edge stamp, classified at the next ping. */
+	lathist_add(&hub->lat[s], now - hub->pass_origin);
 	store_send(hub, buf, (size_t)n, now);	/* as received */
 	if (health_rx(&hub->h, s, now))
 		report_up(hub, s);
@@ -515,8 +559,10 @@ int main(void)
 			rc = EX_OK;
 			goto out;
 		}
-		if (report_due(&rep, now))
+		if (report_due(&rep, now)) {
 			log_counts(&hub, &rep, false);
+			log_latency(&hub, false);
+		}
 	}
 
 out:
@@ -532,6 +578,8 @@ out:
 	if (rep_ok) {
 		report_final(&rep);
 		log_counts(&hub, &rep, true);
+		log_latency(&hub, true);
+		dump_latency(&hub);
 	}
 	log_msg(LOG_I, "store_link forwarded=%" PRIu64 " dropped=%" PRIu64, hub.store_fwd,
 		hub.store_dropped);

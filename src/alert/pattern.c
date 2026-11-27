@@ -148,6 +148,20 @@ int pattern_buzz_side(unsigned right, unsigned left)
 	return pattern_buzz_rank(left) > pattern_buzz_rank(right) ? 1 : 0;
 }
 
+int pattern_urgency(unsigned state)
+{
+	switch (state) {
+	case ST_APPROACHING:
+	case ST_DEG_APPROACHING:
+		return 1;
+	case ST_IN_ZONE:
+	case ST_DEG_IN_ZONE:
+		return 2;
+	default:
+		return 0;
+	}
+}
+
 const char *pattern_state_name(unsigned state)
 {
 	static const char *const names[PAT_NSTATES] = {

@@ -104,7 +104,8 @@ static int send_pair(struct ipc_conn *c, uint32_t *seq, unsigned right, unsigned
 	m.state = (uint8_t)right;
 	m.state_left = (uint8_t)left;
 	m.seq = (*seq)++;
-	m.origin_ns = (uint64_t)now;
+	m.origin_ns = (uint64_t)now;	/* as if the reading and the hub's send were now */
+	m.hub_ns = (uint64_t)now;
 	return ipc_send(c, &m, sizeof(m), now);
 }
 

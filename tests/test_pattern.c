@@ -120,6 +120,22 @@ static void test_buzzer_side(void)
 	CHECK(pattern_buzz_rank(ST_APPROACHING) == 0 && pattern_buzz_rank(ST_CLEAR) == 0);
 }
 
+/* The latency rule's ladder: a warning getting more urgent, degraded or not. */
+static void test_urgency(void)
+{
+	CHECK(pattern_urgency(ST_CLEAR) == 0 && pattern_urgency(ST_DEG_CLEAR) == 0);
+	CHECK(pattern_urgency(ST_BLIND) == 0 && pattern_urgency(PAT_HUB_LOST) == 0);
+	CHECK(pattern_urgency(ST_APPROACHING) == 1 && pattern_urgency(ST_DEG_APPROACHING) == 1);
+	CHECK(pattern_urgency(ST_IN_ZONE) == 2 && pattern_urgency(ST_DEG_IN_ZONE) == 2);
+	CHECK(pattern_urgency(99) == 0);
+	/* The rises a pass produces, and the falls that must not be sampled. */
+	CHECK(pattern_urgency(ST_APPROACHING) > pattern_urgency(ST_CLEAR));
+	CHECK(pattern_urgency(ST_IN_ZONE) > pattern_urgency(ST_APPROACHING));
+	CHECK(pattern_urgency(ST_DEG_IN_ZONE) > pattern_urgency(ST_DEG_CLEAR));
+	CHECK(pattern_urgency(ST_DEG_APPROACHING) == pattern_urgency(ST_APPROACHING));	/* sonar lost: no rise */
+	CHECK(pattern_urgency(ST_CLEAR) < pattern_urgency(ST_IN_ZONE));
+}
+
 static void test_names(void)
 {
 	CHECK(strcmp(pattern_state_name(PAT_HUB_LOST), "HUB_LOST") == 0);
@@ -136,6 +152,7 @@ int main(void)
 	RUN(test_starts_on);
 	RUN(test_next_edge_matches_scan);
 	RUN(test_buzzer_side);
+	RUN(test_urgency);
 	RUN(test_names);
 	return 0;
 }

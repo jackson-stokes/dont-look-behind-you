@@ -41,6 +41,12 @@ int pattern_buzz_rank(unsigned state);
 /* Whose buzzer pattern plays: 0 = right, 1 = left. A tie goes to the right. */
 int pattern_buzz_side(unsigned right, unsigned left);
 
+/* How urgent a side's warning is: 2 IN_ZONE / DEG_IN_ZONE, 1 APPROACHING /
+ * DEG_APPROACHING, 0 anything else (CLEAR, DEG_CLEAR, BLIND, HUB_LOST). alert
+ * samples latency only when this rises: timers only ever lower it, so a rise
+ * is always caused by a reading. */
+int pattern_urgency(unsigned state);
+
 const char *pattern_state_name(unsigned state);
 
 #endif
