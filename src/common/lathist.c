@@ -138,6 +138,10 @@ int lathist_write(const struct lathist *h, int fd, const char *name)
 			continue;
 		n = snprintf(line, sizeof(line), "%" PRId64 " %" PRId64 " %" PRIu64 "\n",
 			     lathist_bin_lo(i), lathist_bin_hi(i), h->bins[i]);
+		if (n < 0 || (size_t)n >= sizeof(line)) {
+			errno = EINVAL;
+			return -1;
+		}
 		if (write_all(fd, line, (size_t)n) < 0)
 			return -1;
 	}

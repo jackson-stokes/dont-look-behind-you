@@ -104,21 +104,23 @@ static unsigned levels(const struct alert *a, int64_t now)
 	return bits;
 }
 
-/* Write the outputs if they changed. A failed write leaves out as it was, so
- * the next pass (at most MAX_IDLE_MS later) tries again. */
-static void drive(struct alert *a, int64_t now, unsigned bits)
+/* Write the outputs if they changed. Returns true if the outputs now show bits
+ * (already did, or the write worked). A failed write leaves out as it was and
+ * returns false, so the next pass (at most MAX_IDLE_MS later) tries again. */
+static bool drive(struct alert *a, int64_t now, unsigned bits)
 {
 	if (a->out_known && bits == a->out)
-		return;
+		return true;
 	if (a->gpio_fd >= 0 && gpio_out_set(a->gpio_fd, bits) < 0) {
 		a->write_errs++;
 		log_limited(&a->lim_write, now, LOG_E, "gpio_write_failed err=%s", strerror(errno));
-		return;
+		return false;
 	}
 	a->out = bits;
 	a->out_known = true;
 	a->writes++;
 	trace(a, now, bits);
+	return true;
 }
 
 /* A rise in urgency (pattern_urgency) is always caused by a reading, so its
@@ -134,7 +136,8 @@ static void note_rise(struct alert *a, int side, unsigned st, const struct alert
 	a->pend[side].hub_ns = m->hub_ns;
 }
 
-/* After drive(): the outputs now show every pending rise. */
+/* Call only when drive() reported the outputs up to date: they now show every
+ * pending rise. */
 static void record_rises(struct alert *a)
 {
 	int64_t t = -1;
@@ -479,8 +482,10 @@ int main(void)
 		}
 
 		check_hub(&a, now);
-		drive(&a, now, levels(&a, now));
-		record_rises(&a);
+		/* Only once the outputs really show the new state: after a failed write
+		 * the rise stays pending and is timed on the pass whose write succeeds. */
+		if (drive(&a, now, levels(&a, now)))
+			record_rises(&a);
 
 		/* From this loop, never a side thread: a stuck loop goes quiet. */
 		if ((pfd[2].revents && hb_readable(&hb) < 0) || hb_tick(&hb, now) < 0) {
