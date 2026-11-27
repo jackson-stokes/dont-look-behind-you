@@ -1,5 +1,7 @@
 #include "supervise.h"
 
+#include <errno.h>
+#include <sched.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <sysexits.h>
@@ -93,4 +95,53 @@ int64_t sup_deadline(const struct child_sm *c)
 	default:
 		return INT64_MAX;
 	}
+}
+
+int sup_rt_prio(const char *name)
+{
+	static const struct { const char *name; int prio; } table[] = {
+		{ "cap-radar",      60 },
+		{ "cap-radar-left", 60 },
+		{ "cap-sonar",      60 },
+		{ "fuse-hub",       70 },
+		{ "alert",          80 },
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(table) / sizeof(table[0]); i++)
+		if (strcmp(name, table[i].name) == 0)
+			return table[i].prio;
+	return 0;
+}
+
+int sup_parse_sched(const char *s, enum sup_sched *out)
+{
+	if (!s || !*s || strcmp(s, "fifo") == 0) {
+		*out = SUP_SCHED_FIFO;
+		return 0;
+	}
+	if (strcmp(s, "other") == 0) {
+		*out = SUP_SCHED_OTHER;
+		return 0;
+	}
+	errno = EINVAL;
+	return -1;
+}
+
+void sup_sched_for(const char *name, enum sup_sched mode, int *policy, int *prio)
+{
+	int p = sup_rt_prio(name);
+
+	if (mode == SUP_SCHED_FIFO && p > 0) {
+		*policy = SCHED_FIFO;
+		*prio = p;
+	} else {
+		*policy = SCHED_OTHER;
+		*prio = 0;
+	}
+}
+
+const char *sup_sched_name(enum sup_sched mode)
+{
+	return mode == SUP_SCHED_OTHER ? "other" : "fifo";
 }

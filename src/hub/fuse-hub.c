@@ -15,7 +15,9 @@
  * - Heartbeats to dlby-super from the main loop (hb.h); standalone when not
  *   supervised. Event counts every $DLBY_REPORT_S and a final=1 line on exit.
  *
- * Not yet: SCHED_FIFO 70 (dlby-super sets it, mechanism C).
+ * - Mechanism C (DESIGN.md §2 C): dlby-super starts it at SCHED_FIFO 70, between
+ *   the capture processes (60) and alert (80); it locks its own memory
+ *   (mlockall) when supervised.
  *
  * Exit codes: 0 on SIGTERM/SIGINT or when dlby-super is gone, 69 if the socket
  * can't be set up, 78 on a bad setting, 70 on any other unexpected failure.

@@ -47,6 +47,46 @@ static void test_cpu_ticks(void)
 	CHECK(procstat_cpu_ticks("no paren", &t) == -1);
 }
 
+/* Full-length stat lines (52 fields, as Linux 6.x writes them), with the values
+ * that break a naive parser: tpgid -1, priority -51 (a FIFO 50 task) and rsslim
+ * 18446744073709551615, which fits no signed type. Field 40 is rt_priority,
+ * 41 policy. */
+#define STAT_HEAD  "4242 (fuse-hub) S 1 4242 4242 0 -1 4194560 120 0 0 0 7 3 0 0 -71 0 1 0 105 " \
+		   "2646016 260 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 2 "
+#define STAT_TAIL  " 0 0 0 0 0 0 0 0 0 0 0\n"
+
+static void test_sched(void)
+{
+	int policy = -1, prio = -1;
+	uint64_t t;
+
+	CHECK(procstat_sched(STAT_HEAD "70 1" STAT_TAIL, &policy, &prio) == 0);
+	CHECK(policy == 1 && prio == 70);				/* SCHED_FIFO 70 */
+	CHECK(strcmp(procstat_policy_name(policy), "fifo") == 0);
+	CHECK(procstat_sched(STAT_HEAD "0 0" STAT_TAIL, &policy, &prio) == 0);
+	CHECK(policy == 0 && prio == 0);				/* store: OTHER */
+	CHECK(strcmp(procstat_policy_name(policy), "other") == 0);
+	/* The same line still gives the CPU ticks (fields 14, 15). */
+	CHECK(procstat_cpu_ticks(STAT_HEAD "70 1" STAT_TAIL, &t) == 0 && t == 10);
+	/* Policy last on the line, with no trailing fields or newline. */
+	CHECK(procstat_sched(STAT_HEAD "90 1", &policy, &prio) == 0 && policy == 1 && prio == 90);
+	/* comm with spaces and a ')' inside. */
+	CHECK(procstat_sched("9 (a) b) S 1 1 1 0 -1 0 0 0 0 0 7 3 0 0 -61 0 1 0 105 2646016 260 "
+			     "18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 2 60 1\n",
+			     &policy, &prio) == 0 && policy == 1 && prio == 60);
+	/* Too short: the line ends before field 41. */
+	errno = 0;
+	CHECK(procstat_sched(STAT_HEAD "70\n", &policy, &prio) == -1 && errno == EINVAL);
+	CHECK(procstat_sched(STAT_HEAD, &policy, &prio) == -1);
+	/* Out of range or not a number where 40/41 should be. */
+	CHECK(procstat_sched(STAT_HEAD "70 9" STAT_TAIL, &policy, &prio) == -1);
+	CHECK(procstat_sched(STAT_HEAD "100 1" STAT_TAIL, &policy, &prio) == -1);
+	CHECK(procstat_sched(STAT_HEAD "-1 1" STAT_TAIL, &policy, &prio) == -1);
+	CHECK(procstat_sched("no paren", &policy, &prio) == -1);
+	CHECK(strcmp(procstat_policy_name(2), "rr") == 0);
+	CHECK(strcmp(procstat_policy_name(4), "unknown") == 0);
+}
+
 static void test_sys_cpu(void)
 {
 	uint64_t total = 0, idle = 0;
@@ -101,12 +141,14 @@ static void test_live(void)
 	char buf[PROCSTAT_BUF];
 	uint64_t t, total, idle;
 	long kb;
-	int fds;
+	int fds, policy, prio;
 
 	CHECK(procstat_read("/proc/self/status", buf, sizeof(buf)) > 0);
 	CHECK(procstat_rss_kb(buf, &kb) == 0 && kb > 0);
 	CHECK(procstat_read("/proc/self/stat", buf, sizeof(buf)) > 0);
 	CHECK(procstat_cpu_ticks(buf, &t) == 0);
+	CHECK(procstat_sched(buf, &policy, &prio) == 0);	/* the real line, rsslim and all */
+	CHECK(strcmp(procstat_policy_name(policy), "unknown") != 0);
 	CHECK(procstat_read("/proc/stat", buf, sizeof(buf)) > 0);
 	CHECK(procstat_sys_cpu(buf, &total, &idle) == 0 && total >= idle);
 	fds = procstat_count_fds(getpid());
@@ -161,6 +203,7 @@ int main(void)
 {
 	RUN(test_rss);
 	RUN(test_cpu_ticks);
+	RUN(test_sched);
 	RUN(test_sys_cpu);
 	RUN(test_meminfo_load);
 	RUN(test_read_long_file_head);

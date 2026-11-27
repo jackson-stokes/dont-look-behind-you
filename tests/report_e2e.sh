@@ -20,7 +20,7 @@ super=""
 
 cleanup() {
 	[ -n "$super" ] && kill -KILL "$super" 2>/dev/null
-	for p in $(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=//p' "$LOG" 2>/dev/null); do
+	for p in $(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=\([0-9]*\).*/\1/p' "$LOG" 2>/dev/null); do
 		kill -KILL "$p" 2>/dev/null
 	done
 	rm -rf "$T"
@@ -103,7 +103,7 @@ s=$(grep -E '^store\[[0-9]+\] I counts n=2 ' "$LOG")
 [ "$(field records "$s")" -gt 0 ] || fail "store counts: $s"
 
 # A killed cap-sonar shows as one restart in the next report.
-sonar=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=cap-sonar pid=//p' "$LOG" | tail -n 1)
+sonar=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=cap-sonar pid=\([0-9]*\).*/\1/p' "$LOG" | tail -n 1)
 kill -KILL "$sonar" || fail "kill cap-sonar"
 wait_count '^dlby-super\[[0-9]+\] I first_heartbeat name=cap-sonar ' "$LOG" 2 3000 ||
 	fail "cap-sonar not restarted"

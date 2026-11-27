@@ -70,4 +70,28 @@ enum sup_action sup_tick(struct child_sm *c, int64_t now_ns);
 /* Earliest time sup_tick() may return something other than SUP_NONE. */
 int64_t sup_deadline(const struct child_sm *c);
 
+/* Mechanism C (DESIGN.md §2 C): SCHED_FIFO on the alert chain, priority rising
+ * downstream so each stage runs as soon as its input arrives. Everything else,
+ * store included, is SCHED_OTHER. $DLBY_SCHED=other runs the whole tree under
+ * SCHED_OTHER, for the experiment that measures what FIFO buys. */
+#define SUP_SCHED_ENV     "DLBY_SCHED"
+#define SUP_SUPER_RT_PRIO 90
+
+enum sup_sched {
+	SUP_SCHED_FIFO,
+	SUP_SCHED_OTHER,
+};
+
+/* The FIFO priority of a child: cap-* 60, fuse-hub 70, alert 80; 0 (SCHED_OTHER)
+ * for anything else. */
+int sup_rt_prio(const char *name);
+
+/* NULL or "" -> fifo; "fifo" | "other"; else -1 with EINVAL. */
+int sup_parse_sched(const char *s, enum sup_sched *out);
+
+/* The policy and priority to give a child in this mode. */
+void sup_sched_for(const char *name, enum sup_sched mode, int *policy, int *prio);
+
+const char *sup_sched_name(enum sup_sched mode);
+
 #endif

@@ -20,6 +20,13 @@ int procstat_rss_kb(const char *status, long *kb);
  * spaces and parentheses, so fields are counted from the last ')'. */
 int procstat_cpu_ticks(const char *stat, uint64_t *ticks);
 
+/* /proc/<pid>/stat: scheduling policy (field 41: 0 OTHER, 1 FIFO, 2 RR, ...) and
+ * real-time priority (field 40), as the kernel has them. */
+int procstat_sched(const char *stat, int *policy, int *rt_prio);
+
+/* "fifo", "other", "rr", "batch", "idle", "deadline", or "unknown". */
+const char *procstat_policy_name(int policy);
+
 /* /proc/stat first line: total = user..steal; idle = idle + iowait. */
 int procstat_sys_cpu(const char *stat, uint64_t *total, uint64_t *idle);
 

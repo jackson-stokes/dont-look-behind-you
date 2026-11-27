@@ -27,8 +27,14 @@
  *   dlby-super --outputs-off   drives those lines low, releases them and exits;
  *                              systemd's ExecStopPost, after the tree is gone.
  *
- * Not yet: SCHED_FIFO 90 + mlockall here and FIFO 60/70/80 for the alert chain
- * (mechanism C).
+ * - Mechanism C (DESIGN.md §2 C): super runs at SCHED_FIFO 90 with
+ *   SCHED_RESET_ON_FORK, so nothing it forks inherits 90; every child, first
+ *   start or restart, gets its policy set explicitly before exec: FIFO 60
+ *   cap-*, 70 fuse-hub, 80 alert, SCHED_OTHER store (supervise.h). Super
+ *   mlockalls itself; the real-time children do their own. $DLBY_SCHED=other
+ *   runs the whole tree SCHED_OTHER for the experiment. A refused setting is
+ *   logged (sched_failed) and the child runs anyway, at the wrong priority
+ *   rather than not at all.
  *
  * Exit codes: 0 after SIGTERM/SIGINT, 64 bad usage, 78 bad config, 70 otherwise;
  * --outputs-off: 0, 78 bad settings or no chip, 69 GPIO failure.
@@ -53,6 +59,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
@@ -77,7 +85,7 @@ struct child_def {
 	bool        last_to_stop;
 };
 
-/* DESIGN.md §2 E start order. TODO(mechanism C): FIFO 60 cap-*, 70 fuse-hub, 80 alert. */
+/* DESIGN.md §2 E start order. Scheduling policy per child: sup_sched_for(). */
 static const struct child_def all_children[MAX_CHILDREN] = {
 	{ "store",      5, true },	/* OTHER, nice +5 (DESIGN.md §1) */
 	{ "fuse-hub",   0, false },
@@ -99,6 +107,21 @@ struct child {
 
 static struct child kids[MAX_CHILDREN];
 static size_t nkids;
+
+/* $DLBY_SCHED, read once at start; exec_child applies it to every child. */
+static enum sup_sched sched_mode = SUP_SCHED_FIFO;
+
+/* "fifo:70" or "other": what sup_sched_for() gives this child. */
+static void sched_str(const struct child_def *def, char *buf, size_t cap)
+{
+	int policy, prio;
+
+	sup_sched_for(def->name, sched_mode, &policy, &prio);
+	if (policy == SCHED_FIFO)
+		snprintf(buf, cap, "fifo:%d", prio);
+	else
+		snprintf(buf, cap, "other");
+}
 
 /* The alert output lines, and super's hold on them while alert is down. */
 static struct alert_pins pins;
@@ -264,9 +287,10 @@ static int select_children(const char *bin_dir)
 __attribute__((noreturn))
 static void exec_child(const struct child *c, int fd)
 {
+	struct sched_param sp = { 0 };
 	char pid_s[24];
 	sigset_t none;
-	int err;
+	int err, policy;
 
 	if (fd == CHILD_HB_FD) {
 		if (fcntl(fd, F_SETFD, 0) < 0)
@@ -276,6 +300,12 @@ static void exec_child(const struct child *c, int fd)
 	}
 	if (sigemptyset(&none) < 0 || sigprocmask(SIG_SETMASK, &none, NULL) < 0)
 		goto fail;
+	/* Every start, first or restart: the policy is set here, never inherited
+	 * (super's SCHED_RESET_ON_FORK already dropped this process to OTHER). */
+	sup_sched_for(c->def->name, sched_mode, &policy, &sp.sched_priority);
+	if (sched_setscheduler(0, policy, &sp) < 0)
+		log_msg(LOG_W, "sched_failed name=%s policy=%s prio=%d err=%s", c->def->name,
+			policy == SCHED_FIFO ? "fifo" : "other", sp.sched_priority, strerror(errno));
 	if (c->def->nice && setpriority(PRIO_PROCESS, 0, c->def->nice) < 0)
 		goto fail;
 	snprintf(pid_s, sizeof(pid_s), "%ld", (long)getppid());
@@ -307,6 +337,7 @@ static void decide(struct child *c, int status, int64_t now)
 
 static void start_child(struct child *c, int64_t now)
 {
+	char sched[16];
 	int sv[2];
 	pid_t pid;
 
@@ -328,7 +359,8 @@ static void start_child(struct child *c, int64_t now)
 	c->hb_fd = sv[0];
 	c->starts++;
 	sup_on_start(&c->sm, now);
-	log_msg(LOG_I, "child_start name=%s pid=%ld", c->def->name, (long)pid);
+	sched_str(c->def, sched, sizeof(sched));
+	log_msg(LOG_I, "child_start name=%s pid=%ld sched=%s", c->def->name, (long)pid, sched);
 	return;
 
 fail:
@@ -536,28 +568,52 @@ static void note_err(char *err, size_t cap, const char *what)
 		snprintf(err, cap, " err=%s:%s", what, strerror(errno));
 }
 
-/* One process's RSS, CPU seconds and open fds; -1 for any that can't be read. */
-static void read_proc(const char *dir, pid_t pid, long clk_tck, long *rss_kb, double *cpu_s,
-		      int *fds, char *err, size_t cap)
+/* One process as the kernel sees it; -1 for anything that can't be read. */
+struct proc_info {
+	long   rss_kb;
+	double cpu_s;
+	int    fds;
+	int    policy;		/* procstat_sched: 0 OTHER, 1 FIFO, ... */
+	int    rt_prio;
+};
+
+static void read_proc(const char *dir, pid_t pid, long clk_tck, struct proc_info *pi, char *err,
+		      size_t cap)
 {
 	char path[64], buf[PROCSTAT_BUF];
 	uint64_t ticks;
 
-	*rss_kb = -1;
-	*cpu_s = -1;
+	pi->rss_kb = -1;
+	pi->cpu_s = -1;
+	pi->policy = -1;
+	pi->rt_prio = -1;
 	snprintf(path, sizeof(path), "%s/status", dir);
-	if (procstat_read(path, buf, sizeof(buf)) < 0 || procstat_rss_kb(buf, rss_kb) < 0) {
-		*rss_kb = -1;
+	if (procstat_read(path, buf, sizeof(buf)) < 0 || procstat_rss_kb(buf, &pi->rss_kb) < 0) {
+		pi->rss_kb = -1;
 		note_err(err, cap, "status");
 	}
 	snprintf(path, sizeof(path), "%s/stat", dir);
-	if (procstat_read(path, buf, sizeof(buf)) < 0 || procstat_cpu_ticks(buf, &ticks) < 0)
+	if (procstat_read(path, buf, sizeof(buf)) < 0) {
 		note_err(err, cap, "stat");
-	else
-		*cpu_s = (double)ticks / (double)clk_tck;
-	*fds = procstat_count_fds(pid);
-	if (*fds < 0)
+	} else {
+		if (procstat_cpu_ticks(buf, &ticks) < 0)
+			note_err(err, cap, "stat");
+		else
+			pi->cpu_s = (double)ticks / (double)clk_tck;
+		if (procstat_sched(buf, &pi->policy, &pi->rt_prio) < 0) {
+			pi->policy = -1;
+			pi->rt_prio = -1;
+			note_err(err, cap, "stat");
+		}
+	}
+	pi->fds = procstat_count_fds(pid);
+	if (pi->fds < 0)
 		note_err(err, cap, "fd");
+}
+
+static const char *policy_str(int policy)
+{
+	return policy < 0 ? "-" : procstat_policy_name(policy);
 }
 
 static void report_system(struct sysrep *sr, int64_t now, bool final)
@@ -607,40 +663,75 @@ static void report_system(struct sysrep *sr, int64_t now, bool final)
 static void report_all(struct sysrep *sr, int64_t now, bool final)
 {
 	const char *fin = final ? " final=1" : "";
+	struct proc_info pi;
 	char err[96];
-	long rss;
-	double cpu;
-	int fds;
 	size_t i;
 	struct child *c;
 
 	report_system(sr, now, final);
 
 	err[0] = '\0';
-	read_proc("/proc/self", getpid(), sr->clk_tck, &rss, &cpu, &fds, err, sizeof(err));
-	if (fds > 0)
-		fds--;		/* the directory being counted */
+	read_proc("/proc/self", getpid(), sr->clk_tck, &pi, err, sizeof(err));
+	if (pi.fds > 0)
+		pi.fds--;	/* the directory being counted */
 	log_msg(LOG_I, "report_child n=%" PRIu32 " name=dlby-super pid=%ld up=1 state=running"
-		" restarts=0 rss_kb=%ld cpu_s=%.2f fds=%d%s%s", sr->r.n, (long)getpid(), rss, cpu,
-		fds, fin, err);
+		" restarts=0 rss_kb=%ld cpu_s=%.2f fds=%d policy=%s rtprio=%d%s%s", sr->r.n,
+		(long)getpid(), pi.rss_kb, pi.cpu_s, pi.fds, policy_str(pi.policy), pi.rt_prio, fin,
+		err);
 
 	for (i = 0; i < nkids; i++) {
 		char dir[32];
 
 		c = &kids[i];
 		err[0] = '\0';
-		rss = -1;
-		cpu = -1;
-		fds = -1;
+		pi = (struct proc_info){ .rss_kb = -1, .cpu_s = -1, .fds = -1, .policy = -1,
+					 .rt_prio = -1 };
 		if (c->pid > 0) {
 			snprintf(dir, sizeof(dir), "/proc/%ld", (long)c->pid);
-			read_proc(dir, c->pid, sr->clk_tck, &rss, &cpu, &fds, err, sizeof(err));
+			read_proc(dir, c->pid, sr->clk_tck, &pi, err, sizeof(err));
 		}
 		log_msg(LOG_I, "report_child n=%" PRIu32 " name=%s pid=%ld up=%d state=%s restarts=%"
-			PRIu32 " rss_kb=%ld cpu_s=%.2f fds=%d%s%s", sr->r.n, c->def->name, (long)c->pid,
+			PRIu32 " rss_kb=%ld cpu_s=%.2f fds=%d policy=%s rtprio=%d%s%s", sr->r.n,
+			c->def->name, (long)c->pid,
 			c->pid > 0 && c->sm.state == CH_RUNNING && c->sm.got_hb,
-			state_name(c->sm.state), c->starts ? c->starts - 1 : 0, rss, cpu, fds, fin, err);
+			state_name(c->sm.state), c->starts ? c->starts - 1 : 0, pi.rss_kb, pi.cpu_s,
+			pi.fds, policy_str(pi.policy), pi.rt_prio, fin, err);
 	}
+}
+
+/* Mechanism C for super itself, before any child starts: FIFO 90 with
+ * RESET_ON_FORK in fifo mode, memory locked in both modes (so the experiment's
+ * two runs differ only in policy). Fills rt_runtime with
+ * /proc/sys/kernel/sched_rt_runtime_us, the throttle DESIGN.md §2 C relies on. */
+static void setup_sched(char *rt_runtime, size_t cap)
+{
+	struct sched_param sp = { .sched_priority = SUP_SUPER_RT_PRIO };
+	char buf[32], *end;
+	long v;
+
+	if (sched_mode == SUP_SCHED_FIFO &&
+	    sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &sp) < 0)
+		log_msg(LOG_W, "sched_failed name=dlby-super policy=fifo prio=%d err=%s",
+			SUP_SUPER_RT_PRIO, strerror(errno));
+	if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0)
+		log_msg(LOG_W, "mlockall_failed err=%s", strerror(errno));
+
+	snprintf(rt_runtime, cap, "unknown");
+	if (procstat_read("/proc/sys/kernel/sched_rt_runtime_us", buf, sizeof(buf)) < 0) {
+		log_msg(LOG_W, "rt_runtime_unreadable err=%s", strerror(errno));
+		return;
+	}
+	errno = 0;
+	v = strtol(buf, &end, 10);
+	if (errno || end == buf) {
+		log_msg(LOG_W, "rt_runtime_unreadable err=%s", "parse");
+		return;
+	}
+	snprintf(rt_runtime, cap, "%ld", v);
+	/* -1 turns the throttle off: a spinning FIFO child could then starve
+	 * everything below it, super's watchdog pings included. */
+	if (v < 0)
+		log_msg(LOG_W, "rt_throttle_off rt_runtime_us=%ld", v);
 }
 
 /* Wall-clock time as ISO 8601 UTC, or "unknown" (logged) if it can't be read. */
@@ -689,7 +780,7 @@ int main(int argc, char **argv)
 	struct log_limit lim_notify = { 0 };
 	struct sysrep sr = { 0 };
 	const char *bin_dir;
-	char names[128] = "", wall[32];
+	char names[128] = "", wall[32], rt_runtime[24];
 	int64_t now, next_wd, due, d;
 	bool ready_sent = false;
 	int sfd = -1, rc = EX_SOFTWARE, n;
@@ -716,6 +807,10 @@ int main(int argc, char **argv)
 			getenv(ALERT_LED_RIGHT_ENV) ? getenv(ALERT_LED_RIGHT_ENV) : "-",
 			ALERT_LED_LEFT_ENV, getenv(ALERT_LED_LEFT_ENV) ? getenv(ALERT_LED_LEFT_ENV) : "-",
 			ALERT_BUZZ_ENV, getenv(ALERT_BUZZ_ENV) ? getenv(ALERT_BUZZ_ENV) : "-");
+		return EX_CONFIG;
+	}
+	if (sup_parse_sched(getenv(SUP_SCHED_ENV), &sched_mode) < 0) {
+		log_msg(LOG_E, "bad_config %s=%s want=fifo|other", SUP_SCHED_ENV, getenv(SUP_SCHED_ENV));
 		return EX_CONFIG;
 	}
 	for (i = 0; i < nkids; i++) {
@@ -745,9 +840,11 @@ int main(int argc, char **argv)
 		log_msg(LOG_W, "clk_tck_failed err=%s assume=100", strerror(errno));
 		sr.clk_tck = 100;
 	}
+	setup_sched(rt_runtime, sizeof(rt_runtime));
 	wall_now(wall, sizeof(wall));
-	log_msg(LOG_I, "start wall=%s version=%s report_s=%" PRId64 " bin_dir=%s children=%s",
-		wall, DLBY_VERSION, sr.r.period_ns / 1000000000, bin_dir, names);
+	log_msg(LOG_I, "start wall=%s version=%s report_s=%" PRId64 " sched=%s rt_runtime_us=%s"
+		" bin_dir=%s children=%s", wall, DLBY_VERSION, sr.r.period_ns / 1000000000,
+		sup_sched_name(sched_mode), rt_runtime, bin_dir, names);
 	report_system(&sr, now, false);	/* CPU baseline; logged as report n=0 */
 	next_wd = now;
 

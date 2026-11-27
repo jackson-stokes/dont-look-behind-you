@@ -32,7 +32,7 @@ super=""
 # Every child pid any super started.
 all_pids() {
 	cat "$LOG" "$LOG2" "$LOG3" 2>/dev/null |
-		sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=//p'
+		sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=\([0-9]*\).*/\1/p'
 }
 
 cleanup() {
@@ -79,7 +79,7 @@ wait_count() {
 }
 
 pid_of() {
-	sed -n "s/^dlby-super\[[0-9]*\] I child_start name=$1 pid=//p" "$2" | tail -n 1
+	sed -n "s/^dlby-super\[[0-9]*\] I child_start name=$1 pid=\([0-9]*\).*/\1/p" "$2" | tail -n 1
 }
 
 field() {
@@ -194,7 +194,7 @@ for n in store fuse-hub alert cap-radar cap-radar-left cap-sonar; do
 	wait_for "^dlby-super\[[0-9]+\] I first_heartbeat name=$n " "$LOG2" 3000 ||
 		fail "phase 2: no first_heartbeat for $n"
 done
-pids2=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=//p' "$LOG2")
+pids2=$(sed -n 's/^dlby-super\[[0-9]*\] I child_start name=[^ ]* pid=\([0-9]*\).*/\1/p' "$LOG2")
 kill -KILL "$super" || fail "kill -KILL super"
 wait "$super" 2>/dev/null
 super=""

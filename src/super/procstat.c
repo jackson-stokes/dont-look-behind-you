@@ -82,6 +82,57 @@ int procstat_cpu_ticks(const char *stat, uint64_t *ticks)
 	return 0;
 }
 
+int procstat_sched(const char *stat, int *policy, int *rt_prio)
+{
+	const char *p = strrchr(stat, ')');
+	unsigned long v[2];
+	char *end;
+	int field;
+
+	if (!p)
+		return bad();
+	p++;
+	/* Fields 3..39 are skipped as tokens, never converted: some are negative
+	 * (tpgid -1, priority -51) and some don't fit any signed type (rsslim is
+	 * 18446744073709551615). Only 40 (rt_priority) and 41 (policy) are read. */
+	for (field = 3; field <= 41; field++) {
+		while (*p == ' ')
+			p++;
+		if (!*p || *p == '\n')
+			return bad();
+		if (field < 40) {
+			while (*p && *p != ' ' && *p != '\n')
+				p++;
+			continue;
+		}
+		if (*p < '0' || *p > '9')
+			return bad();
+		errno = 0;
+		v[field - 40] = strtoul(p, &end, 10);
+		if (errno || end == p)
+			return bad();
+		p = end;
+	}
+	if (v[0] > 99 || v[1] > 7)
+		return bad();
+	*rt_prio = (int)v[0];
+	*policy = (int)v[1];
+	return 0;
+}
+
+const char *procstat_policy_name(int policy)
+{
+	switch (policy) {
+	case 0: return "other";
+	case 1: return "fifo";
+	case 2: return "rr";
+	case 3: return "batch";
+	case 5: return "idle";
+	case 6: return "deadline";
+	default: return "unknown";
+	}
+}
+
 int procstat_sys_cpu(const char *stat, uint64_t *total, uint64_t *idle)
 {
 	unsigned long long f[8], sum = 0;

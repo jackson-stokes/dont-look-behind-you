@@ -147,6 +147,7 @@ run-tests: $(TESTS) $(BINS)
 	@echo "== tests/capture_e2e.sh"; sh tests/capture_e2e.sh $(BUILD)
 	@echo "== tests/report_e2e.sh"; sh tests/report_e2e.sh $(BUILD)
 	@echo "== tests/alert_e2e.sh"; sh tests/alert_e2e.sh $(BUILD)
+	@echo "== tests/sched_e2e.sh"; sh tests/sched_e2e.sh $(BUILD)
 	@echo "all tests passed ($(BUILD))"
 
 test: check-boundary run-tests

@@ -18,6 +18,11 @@ TimeoutStopSec=6
 
 ExecStart=/opt/dlby/bin/dlby-super
 Environment=DLBY_BIN_DIR=/opt/dlby/bin
+# Mechanism C (DESIGN.md §2 C): dlby-super sets SCHED_FIFO 90 for itself and
+# 60/70/80 for the alert chain, and the real-time processes mlockall. That needs
+# CAP_SYS_NICE and CAP_IPC_LOCK, which root has: no User=, and RestrictRealtime
+# stays off. The latency experiment runs everything SCHED_OTHER with a drop-in
+# setting Environment=DLBY_SCHED=other.
 # After every stop, crash or watchdog kill, once the tree is gone: mirror LEDs
 # and buzzer driven low, so a dark LED means "not running" (DESIGN.md §2 E).
 ExecStopPost=/opt/dlby/bin/dlby-super --outputs-off
