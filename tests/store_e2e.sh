@@ -61,7 +61,10 @@ while [ ! -S "$DLBY_RUN_DIR/fuse-hub.sock" ]; do
 	sleep 0.05
 done
 
-"$B/tools/fake-sensors" radar 5 2>"$T/radar.log" &
+# The radar's target stays beyond fusion's 30 m watch range, so the hub sends no
+# fusion state changes: store 2 must see a steady stream, where only its 1 s
+# timer syncs (a state record syncs too and restarts that timer).
+FAKE_RADAR_MIN_CM=3100 "$B/tools/fake-sensors" radar 5 2>"$T/radar.log" &
 radar=$!
 "$B/tools/fake-sensors" sonar 5 2>"$T/sonar.log" &
 sonar=$!
